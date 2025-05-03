@@ -131,22 +131,15 @@ jobs:
             sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "$MOUNT_POINT" --nointeraction
             sleep 5
             echo "Unmounting volume..."
-            # Get actual mounted volume name after createinstallmedia
             echo "Listing all volumes:"
             ls -la /Volumes/
-            
-            # Unmount any volume containing "Install macOS"
             echo "Searching for Install macOS volumes..."
             for vol in $(ls -1 /Volumes/ | grep "Install macOS"); do
               echo "Trying to unmount /Volumes/$vol"
               diskutil unmount "/Volumes/$vol" 2>/dev/null || true
             done
-            
-            # Unmount the original mount point as fallback
             echo "Trying to unmount original mount point: $MOUNT_POINT"
             diskutil unmount "$MOUNT_POINT" 2>/dev/null || true
-            
-            # Detach all Install macOS related disks with force
             echo "Checking for any remaining volumes..."
             DISK_IDS=$(diskutil list | grep "Install macOS" | awk '{print $1}' | grep "disk" || echo "")
             if [ -n "$DISK_IDS" ]; then
@@ -156,8 +149,6 @@ jobs:
                 diskutil unmountDisk force $DISK_ID || true
               done
             fi
-            
-            # Wait a moment for resources to be freed
             echo "Waiting for resources to be freed..."
             sleep 10
             echo "Converting sparse image to DMG..."
@@ -183,35 +174,22 @@ jobs:
             DMG_SIZE=10g
             echo "Creating DMG file: $DMG_FILE"
             hdiutil create -size $DMG_SIZE -layout SPUD -fs HFS+J -type SPARSE -volname "macOS_Install" -o "${{ github.workspace }}/temp_image"
-            MOUNT_POINT=$(hdiutil attach "${{ github.workspace }}/temp_image.sparseimage" -nobrowse -noverify -noautoopen | tail -n 1 | awk '{print $3}')
-            echo "Mounted DMG at: $MOUNT_POINT"
+            ATTACH_OUTPUT=$(hdiutil attach "${{ github.workspace }}/temp_image.sparseimage" -nobrowse -noverify -noautoopen)
+            MOUNT_POINT=$(echo "$ATTACH_OUTPUT" | tail -n 1 | awk '{print $3}')
+            DISK_DEV=$(echo "$ATTACH_OUTPUT" | head -n 1 | awk '{print $1}')
+            echo "Mounted DMG at: $MOUNT_POINT (Disk: $DISK_DEV)"
             echo "Running createinstallmedia..."
             sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "$MOUNT_POINT" --applicationpath "$INSTALLER_APP" --nointeraction
             sleep 5
-            echo "Unmounting volume..."
+            echo "Unmounting volumes..."
             echo "Listing all volumes:"
             ls -la /Volumes/
-            echo "Searching for other Install macOS volumes..."
-            for vol in $(ls -1 /Volumes/ | grep "Install macOS"); do
-              echo "Trying to unmount /Volumes/$vol"
-              diskutil unmount "/Volumes/$vol" 2>/dev/null || true
-            done
             echo "Trying to unmount original mount point: $MOUNT_POINT"
             diskutil unmount "$MOUNT_POINT" 2>/dev/null || true
-            echo "Searching for other Install macOS volumes..."
             for vol in $(ls -1 /Volumes/ | grep "Install macOS"); do
               echo "Trying to unmount /Volumes/$vol"
               diskutil unmount "/Volumes/$vol" 2>/dev/null || true
             done
-            echo "Checking for any remaining volumes..."
-            DISK_IDS=$(diskutil list | grep "Install macOS" | awk '{print $1}' | grep "disk" || echo "")
-            if [ -n "$DISK_IDS" ]; then
-              echo "Found remaining disks, forcing detach..."
-              for DISK_ID in $DISK_IDS; do
-                echo "Force detaching $DISK_ID"
-                diskutil unmountDisk force $DISK_ID || true
-              done
-            fi
             echo "Ensuring no open file handles on sparseimage..."
             for i in {1..5}; do
               LSOF_OUTPUT=$(lsof | grep temp_image.sparseimage || true)
@@ -224,8 +202,12 @@ jobs:
                 sleep 10
               fi
             done
-            echo "Attempting to detach image explicitly..."
-            hdiutil detach "${{ github.workspace }}/temp_image.sparseimage" 2>/dev/null || true
+            echo "Detaching disk: $DISK_DEV"
+            for i in {1..5}; do
+              hdiutil detach "$DISK_DEV" && break
+              echo "Detach attempt $i failed, retrying in 10s..."
+              sleep 10
+            done
             echo "Converting sparse image to DMG..."
             hdiutil convert "${{ github.workspace }}/temp_image.sparseimage" -format UDZO -o "$DMG_FILE" || {
               echo "First conversion attempt failed, retrying after 30s..."
