@@ -67,7 +67,6 @@ jobs:
                              --maxos ${{ matrix.macos_version_number }} \
                              --version ${{ matrix.macos_version_number }} \
                              -b ${{ matrix.macos_version }} \
-                             --verbose
       - name: Verify download
         working-directory: ${{ github.workspace }}/gibMacOS
         run: |
