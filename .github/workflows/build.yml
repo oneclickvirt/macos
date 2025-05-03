@@ -257,7 +257,7 @@ jobs:
             git rm -rf . || true
           fi
           mkdir -p "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME"
-          cp -f "$DMG_FILE" "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME/"
+          mv -f "$DMG_FILE" "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME/"
           ls -lah "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME/"
           git add "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME/"*
           git commit -m "Add macOS $MACOS_NAME ($MACOS_VERSION) installation image"
