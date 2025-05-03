@@ -11,43 +11,39 @@ jobs:
     strategy:
       matrix:
         include:
-          # - macos_version: "15"
-          #   macos_name: "sequoia"
-          #   catalog: "publicrelease"
-          # - macos_version: "14"
-          #   macos_name: "sonoma"
-          # - macos_version: "13"
-          #   macos_name: "ventura"
-          # - macos_version: "12"
-          #   macos_name: "monterey"
-          - macos_version: "10.16"
-            macos_name: "big_sur"
+          - macos_version: "17G66"
+            macos_name: "high-sierra"
+            maxos_version: "10.13"
             catalog: "publicrelease"
-          # - macos_version: "10.15"
-          #   macos_name: "catalina"
-          # - macos_version: "10.14"
+          # - macos_version: "18F2059"
           #   macos_name: "mojave"
-          # - macos_version: "10.13"
-          #   macos_name: "high_sierra"
-          # - macos_version: "10.12"
-          #   macos_name: "sierra"
-          # - macos_version: "10.11"
-          #   macos_name: "el_capitan"
-          # - macos_version: "10.10"
-          #   macos_name: "yosemite"
-          # - macos_version: "10.9"
-          #   macos_name: "mavericks"
-          # - macos_version: "10.8"
-          #   macos_name: "mountain_lion"
-          # - macos_version: "10.7"
-          #   macos_name: "lion"
-          # - macos_version: "10.6"
-          #   macos_name: "snow_leopard"
-          # - macos_version: "10.5"
-          #   macos_name: "leopard"
-          # - macos_version: "10.4"
-          #   macos_name: "tiger"
-
+          #   maxos_version: "10.14"
+          #   catalog: "publicrelease"
+          # - macos_version: "19D2064"
+          #   macos_name: "catalina"
+          #   maxos_version: "10.15"
+          #   catalog: "publicrelease"
+          # - macos_version: "20G1427"
+          #   macos_name: "big-sur"
+          #   maxos_version: "11.7"
+          #   catalog: "publicrelease"
+          # - macos_version: "21H1123"
+          #   macos_name: "monterey"
+          #   maxos_version: "12.6"
+          #   catalog: "publicrelease"
+          # - macos_version: "22H313"
+          #   macos_name: "ventura"
+          #   maxos_version: "13"
+          #   catalog: "publicrelease"
+          # - macos_version: "23H311"
+          #   macos_name: "sonoma"
+          #   maxos_version: "14"
+          #   catalog: "publicrelease"
+          # - macos_version: "24C101"
+          #   macos_name: "sequoia"
+          #   maxos_version: "15"
+          #   catalog: "publicrelease"
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -76,8 +72,10 @@ jobs:
           source .venv/bin/activate
           ./gibMacOS.command --no-interactive \
                             --catalog ${{ matrix.catalog }} \
-                            --maxos ${{ matrix.macos_version }} \
+                            --maxos ${{ matrix.maxos_version }} \
+                            --version ${{ matrix.maxos_version }} \
                             --dmg \
+                            -b ${{ matrix.macos_version }} \
                             -o "${{ github.workspace }}/output"
       - name: List Output
         run: |
