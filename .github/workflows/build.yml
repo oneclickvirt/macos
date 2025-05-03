@@ -78,7 +78,6 @@ jobs:
                             --catalog ${{ matrix.catalog }} \
                             --maxos ${{ matrix.macos_version }} \
                             --dmg \
-                            -b ${{ matrix.macos_name }} \
                             -o "${{ github.workspace }}/output"
       - name: List Output
         run: |
