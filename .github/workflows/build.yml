@@ -165,17 +165,31 @@ jobs:
           fi
           echo "Using package: $PKG_PATH"
           mkdir -p "$GITHUB_WORKSPACE/output"
-          hdiutil create -o "/tmp/${MACOS_NAME}_full.dmg" -size 16g -layout SPUD -fs HFS+J
+            hdiutil create -o "/tmp/${MACOS_NAME}_full.dmg" -size 14g -layout SPUD -fs HFS+J
           hdiutil attach "/tmp/${MACOS_NAME}_full.dmg" -noverify -mountpoint /Volumes/install_build
+          echo "Available space on /Volumes/install_build:"
+          df -h /Volumes/install_build
           sudo installer -pkg "$PKG_PATH" -target /Volumes/install_build
           echo "Waiting for installer app to be extracted..."
-          TIMEOUT=300  # 5分钟超时
+          TIMEOUT=900  # 15分钟超时
           COUNT=0
           INSTALLER_APP=""
           while [ $COUNT -lt $TIMEOUT ]; do
-            INSTALLER_APP="$(find /Volumes/install_build -name "Install*.app" -maxdepth 1)"
+            # 扩大搜索范围到深度3
+            INSTALLER_APP="$(find /Volumes/install_build -name "Install*.app" -maxdepth 3)"
             if [ -n "$INSTALLER_APP" ]; then
               break
+            fi
+            # 每30秒显示一次详细调试信息
+            if [ $((COUNT % 30)) -eq 0 ]; then
+              echo "------- DEBUG INFO at $COUNT seconds -------"
+              echo "Looking for installation files:"
+              find /Volumes/install_build -type f -name "*.pkg" -o -name "*.app" | sort
+              echo "Running installation processes:"
+              ps aux | grep -i install
+              echo "Content of /Volumes/install_build:"
+              ls -la /Volumes/install_build
+              echo "----------------------------------------"
             fi
             sleep 5
             COUNT=$((COUNT + 5))
@@ -185,19 +199,26 @@ jobs:
             echo "Error: Installer application not found after $TIMEOUT seconds!"
             echo "Contents of /Volumes/install_build:"
             ls -la /Volumes/install_build
+            echo "Searching entire volume for any .app files:"
+            find /Volumes/install_build -name "*.app" -type d
             hdiutil detach /Volumes/install_build -force
             exit 1
           fi
           echo "Found installer app: $INSTALLER_APP"
+          ls -la "$INSTALLER_APP"
+          ls -la "$INSTALLER_APP/Contents" || echo "Contents directory not accessible"
+          ls -la "$INSTALLER_APP/Contents/Resources" || echo "Resources directory not accessible"
           if [ ! -f "$INSTALLER_APP/Contents/Resources/createinstallmedia" ]; then
             echo "Error: createinstallmedia not found in $INSTALLER_APP!"
             echo "Contents of $INSTALLER_APP/Contents/Resources:"
             ls -la "$INSTALLER_APP/Contents/Resources"
+            echo "Trying to find createinstallmedia anywhere on the volume:"
+            find /Volumes/install_build -name "createinstallmedia" -type f
             hdiutil detach /Volumes/install_build -force
             exit 1
           fi
           sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume /Volumes/install_build --nointeraction
-          sleep 10
+          sleep 20
           FINAL_VOLUME=$(df -h | grep "/Volumes/Install" | awk '{print $9}')
           if [ -z "$FINAL_VOLUME" ]; then
             FINAL_VOLUME=$(df -h | grep "/Volumes/Install" | awk '{print $NF}')
@@ -206,6 +227,7 @@ jobs:
             echo "Warning: Cannot find final volume, using original mount point"
             FINAL_VOLUME="/Volumes/install_build"
           fi
+          echo "Detaching volume: $FINAL_VOLUME"
           hdiutil detach "$FINAL_VOLUME" -force
           hdiutil convert "/tmp/${MACOS_NAME}_full.dmg" -format UDZO -o "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
           ls -lah "$GITHUB_WORKSPACE/output"
