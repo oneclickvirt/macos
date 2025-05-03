@@ -78,7 +78,7 @@ jobs:
         working-directory: ${{ github.workspace }}/gibMacOS
         run: |
           source .venv/bin/activate
-          ./gibMacOS.command --no-interactive --catalog ${{ matrix.catalog || 'publicrelease' }} --maxos ${{ matrix.macos_version }} --latest --full
+          ./gibMacOS.command --no-interactive --catalog ${{ matrix.catalog || 'publicrelease' }} --maxos ${{ matrix.macos_version }} --latest
           
       - name: List Download Content
         working-directory: ${{ github.workspace }}/gibMacOS
