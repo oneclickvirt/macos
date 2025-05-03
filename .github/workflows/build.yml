@@ -230,6 +230,13 @@ jobs:
           fi
           echo "Successfully created ${{ matrix.macos_name }}_full.dmg"
     
+      - name: Setup Git LFS
+        run: |
+          git lfs install
+          git lfs track "*.dmg"
+          git add .gitattributes
+          git commit -m "Add .dmg file type to Git LFS tracking"
+      
       - name: Create Release Push to Repository
         working-directory: ${{ github.workspace }}
         run: |
@@ -261,6 +268,4 @@ jobs:
           ls -lah "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME/"
           git add "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME/"*
           git commit -m "Add macOS $MACOS_NAME ($MACOS_VERSION) installation image"
-          # git push -u origin ${{ matrix.macos_name }}-build:${{ matrix.macos_name }}-build
           GIT_TRACE=1 GIT_CURL_VERBOSE=1 git push -u origin ${{ matrix.macos_name }}-build:${{ matrix.macos_name }}-build
-
