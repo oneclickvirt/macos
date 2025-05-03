@@ -59,6 +59,10 @@ jobs:
         run: |
           brew install coreutils
           brew install git
+          
+      - name: Clone and Setup gibMacOS
+        working-directory: ${{ github.workspace }}
+        run: |
           git clone https://github.com/corpnewt/gibMacOS.git
           cd gibMacOS
           python -m venv .venv
@@ -66,34 +70,40 @@ jobs:
           pip install pyyaml requests
           echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
           echo "$VIRTUAL_ENV/bin" >> $GITHUB_PATH
-
-      - name: Setup gibMacOS & Environment
-        run: |
           chmod +x gibMacOS.command
           mkdir -p output
-          source .venv/bin/activate
-
-      - name: Download macOS Installer
+      
+      - name: Download macOS Recovery
+        working-directory: ${{ github.workspace }}/gibMacOS
         run: |
           source .venv/bin/activate
           ./gibMacOS.command --no-interactive --catalog ${{ matrix.catalog || 'publicrelease' }} --maxos ${{ matrix.macos_version }} --latest --recovery
-
-      - name: Prepare for Distribution
+          
+      - name: Process Downloads
+        working-directory: ${{ github.workspace }}/gibMacOS
         run: |
           source .venv/bin/activate
-          cd "$(find . -type d -name "macOS Downloads" | head -1)" || { echo "Could not find macOS Downloads directory"; exit 1; }
-          DOWNLOAD_DIR=$(find . -type d -name "*" -mindepth 1 -maxdepth 1 | head -1)
+          MACOS_NAME="${{ matrix.macos_name }}"
+          MACOS_VERSION="${{ matrix.macos_version }}"
+          echo "Building macOS version: $MACOS_NAME ($MACOS_VERSION)"
+          DOWNLOADS_DIR=$(find . -type d -name "macOS Downloads" | head -1)
+          if [ -z "$DOWNLOADS_DIR" ]; then
+            echo "Error: Could not find macOS Downloads directory"
+            exit 1
+          fi
+          cd "$DOWNLOADS_DIR"
+          DOWNLOAD_DIR=$(find . -type d -mindepth 1 -maxdepth 1 | head -1)
           if [ -z "$DOWNLOAD_DIR" ]; then
             echo "Error: Download directory not found!"
             exit 1
           fi
           cd "$DOWNLOAD_DIR"
-          MACOS_NAME="${{ matrix.macos_name }}"
-          MACOS_VERSION="${{ matrix.macos_version }}"
-          echo "Building macOS version: $MACOS_NAME ($MACOS_VERSION)"
-          echo "Creating DMG file..."
-          if [ -d "$(find . -name "*.pkg" -o -name "*.dmg" | head -1 | xargs dirname)" ]; then
-            cd "$(find . -name "*.pkg" -o -name "*.dmg" | head -1 | xargs dirname)"
+          echo "Currently in directory: $(pwd)"
+          PKG_DIR="$(pwd)"
+          if [ -d "$(find . -name "*.pkg" -o -name "*.dmg" | head -1 | xargs dirname 2>/dev/null)" ]; then
+            PKG_DIR="$(find . -name "*.pkg" -o -name "*.dmg" | head -1 | xargs dirname)"
+            cd "$PKG_DIR"
+            echo "Changed to package directory: $(pwd)"
           fi
           PKG_PATH=$(find . -name "*.pkg" | grep -i "InstallAssistant" | head -1)
           if [ -z "$PKG_PATH" ]; then
@@ -109,6 +119,7 @@ jobs:
               mkdir -p "$GITHUB_WORKSPACE/output"
               cp "$DMG_PATH" "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
               echo "Directly copied installation image to output directory"
+              ls -la "$GITHUB_WORKSPACE/output"
               exit 0
             else
               echo "Error: No installation package found!"
@@ -116,6 +127,33 @@ jobs:
             fi
           fi
           echo "Found package: $PKG_PATH"
+          
+      - name: Create Installation Media
+        run: |
+          MACOS_NAME="${{ matrix.macos_name }}"
+          MACOS_VERSION="${{ matrix.macos_version }}"
+          if [ -f "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg" ]; then
+            echo "DMG already created, skipping installation media creation"
+            exit 0
+          fi
+          cd "$GITHUB_WORKSPACE/gibMacOS"
+          DOWNLOADS_DIR=$(find . -type d -name "macOS Downloads" | head -1)
+          cd "$DOWNLOADS_DIR"
+          DOWNLOAD_DIR=$(find . -type d -mindepth 1 -maxdepth 1 | head -1)
+          cd "$DOWNLOAD_DIR"
+          PKG_PATH=$(find . -name "*.pkg" | grep -i "InstallAssistant" | head -1)
+          if [ -z "$PKG_PATH" ]; then
+            PKG_PATH=$(find . -name "*.pkg" | grep -i "RecoveryHDUpdate" | head -1)
+          fi
+          if [ -z "$PKG_PATH" ]; then
+            PKG_PATH=$(find . -name "*.pkg" | head -1)
+          fi
+          if [ -z "$PKG_PATH" ]; then
+            echo "Error: No package found for installation media creation"
+            exit 1
+          fi
+          echo "Using package: $PKG_PATH"
+          mkdir -p "$GITHUB_WORKSPACE/output"
           hdiutil create -o "/tmp/${MACOS_NAME}_full.dmg" -size 16g -layout SPUD -fs HFS+J
           hdiutil attach "/tmp/${MACOS_NAME}_full.dmg" -noverify -mountpoint /Volumes/install_build
           sudo installer -pkg "$PKG_PATH" -target /Volumes/install_build
@@ -129,51 +167,55 @@ jobs:
           sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume /Volumes/install_build --nointeraction
           sleep 5
           FINAL_VOLUME=$(df -h | grep "/Volumes/Install" | awk '{print $9}')
+          if [ -z "$FINAL_VOLUME" ]; then
+            FINAL_VOLUME=$(df -h | grep "/Volumes/Install" | awk '{print $NF}')
+          fi
           hdiutil detach "$FINAL_VOLUME" -force
           hdiutil convert "/tmp/${MACOS_NAME}_full.dmg" -format UDZO -o "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
-          cd "$GITHUB_WORKSPACE/output"
-          ls -lah
-
-      - name: Create Release Metadata
+          ls -lah "$GITHUB_WORKSPACE/output"
+          
+      - name: Create Release Notes and Push to Repository
+        working-directory: ${{ github.workspace }}
         run: |
-          source .venv/bin/activate
-          cd output
           MACOS_NAME="${{ matrix.macos_name }}"
           MACOS_VERSION="${{ matrix.macos_version }}"
-          
-          if [ ! -f "${MACOS_NAME}_full.dmg" ]; then
+          if [ ! -f "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg" ]; then
             echo "Warning: Output file not found!"
             exit 1
           fi
-          echo "# macOS Installation Image - $MACOS_NAME ($MACOS_VERSION)" > release_notes.txt
-          echo "" >> release_notes.txt
-          echo "This is an automatically built complete macOS installation image." >> release_notes.txt
-          echo "" >> release_notes.txt
-          echo "## Usage" >> release_notes.txt
-          echo "" >> release_notes.txt
-          echo "1. Download the complete DMG file" >> release_notes.txt
-          echo "2. Use Disk Utility or other tools to write the DMG to a USB drive" >> release_notes.txt
-          echo "" >> release_notes.txt
-          echo "## Build Information" >> release_notes.txt
-          echo "" >> release_notes.txt
-          echo "- Build Date: $(date '+%Y-%m-%d %H:%M:%S')" >> release_notes.txt
-          echo "- GitHub Action Run: $GITHUB_RUN_ID" >> release_notes.txt
-          echo "- Image Name: ${MACOS_NAME}" >> release_notes.txt
-          echo "- macOS Version: ${MACOS_VERSION}" >> release_notes.txt
-
-      - name: Configure Git
-        run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          
-      - name: Push to Repository
-        run: |
-          git remote -v
-          git remote add cnb https://cnb:${{ secrets.GIT_TOKEN }}@cnb.cool/oneclickvirt/template.git
-          git remote -v
-          git checkout -b ${{ matrix.macos_name }}-build || git checkout ${{ matrix.macos_name }}-build
-          mkdir -p macOS-images/${{ matrix.macos_name }}
-          cp -f output/* macOS-images/${{ matrix.macos_name }}/
-          git add macOS-images/${{ matrix.macos_name }}/* 
-          git commit -m "Add macOS ${{ matrix.macos_name }} (${{ matrix.macos_version }}) installation image"
-          git push -u cnb ${{ matrix.macos_name }}-build:main
+          echo "# macOS Installation Image - $MACOS_NAME ($MACOS_VERSION)" > "$GITHUB_WORKSPACE/output/release_notes.txt"
+          echo "" >> "$GITHUB_WORKSPACE/output/release_notes.txt"
+          echo "This is an automatically built complete macOS installation image." >> "$GITHUB_WORKSPACE/output/release_notes.txt"
+          echo "" >> "$GITHUB_WORKSPACE/output/release_notes.txt"
+          echo "## Usage" >> "$GITHUB_WORKSPACE/output/release_notes.txt"
+          echo "" >> "$GITHUB_WORKSPACE/output/release_notes.txt"
+          echo "1. Download the complete DMG file" >> "$GITHUB_WORKSPACE/output/release_notes.txt"
+          echo "2. Use Disk Utility or other tools to write the DMG to a USB drive" >> "$GITHUB_WORKSPACE/output/release_notes.txt"
+          echo "" >> "$GITHUB_WORKSPACE/output/release_notes.txt"
+          echo "## Build Information" >> "$GITHUB_WORKSPACE/output/release_notes.txt"
+          echo "" >> "$GITHUB_WORKSPACE/output/release_notes.txt"
+          echo "- Build Date: $(date '+%Y-%m-%d %H:%M:%S')" >> "$GITHUB_WORKSPACE/output/release_notes.txt"
+          echo "- GitHub Action Run: $GITHUB_RUN_ID" >> "$GITHUB_WORKSPACE/output/release_notes.txt"
+          echo "- Image Name: ${MACOS_NAME}" >> "$GITHUB_WORKSPACE/output/release_notes.txt"
+          echo "- macOS Version: ${MACOS_VERSION}" >> "$GITHUB_WORKSPACE/output/release_notes.txt"
+          TEMP_REPO_DIR="$GITHUB_WORKSPACE/temp_repo"
+          mkdir -p "$TEMP_REPO_DIR"
+          cd "$TEMP_REPO_DIR"
+          git init
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git remote add origin https://cnb:${{ secrets.GIT_TOKEN }}@cnb.cool/oneclickvirt/template.git
+          git fetch origin
+          if git ls-remote --heads origin ${{ matrix.macos_name }}-build | grep -q ${{ matrix.macos_name }}-build; then
+            git checkout -b ${{ matrix.macos_name }}-build origin/${{ matrix.macos_name }}-build
+          else
+            git checkout --orphan ${{ matrix.macos_name }}-build
+            # 创建新分支时清空工作区
+            git rm -rf . || true
+          fi
+          mkdir -p "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME"
+          cp -f "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg" "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME/"
+          cp -f "$GITHUB_WORKSPACE/output/release_notes.txt" "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME/"
+          git add "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME/"*
+          git commit -m "Add macOS $MACOS_NAME ($MACOS_VERSION) installation image"
+          git push -u origin ${{ matrix.macos_name }}-build:${{ matrix.macos_name }}-build
