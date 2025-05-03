@@ -191,8 +191,6 @@ jobs:
             echo "Unmounting volume..."
             echo "Listing all volumes:"
             ls -la /Volumes/
-            echo "Unmounting Install macOS High Sierra volume"
-            diskutil unmount "/Volumes/Install macOS High Sierra" 2>/dev/null || true
             echo "Searching for other Install macOS volumes..."
             for vol in $(ls -1 /Volumes/ | grep "Install macOS"); do
               echo "Trying to unmount /Volumes/$vol"
@@ -200,6 +198,11 @@ jobs:
             done
             echo "Trying to unmount original mount point: $MOUNT_POINT"
             diskutil unmount "$MOUNT_POINT" 2>/dev/null || true
+            echo "Searching for other Install macOS volumes..."
+            for vol in $(ls -1 /Volumes/ | grep "Install macOS"); do
+              echo "Trying to unmount /Volumes/$vol"
+              diskutil unmount "/Volumes/$vol" 2>/dev/null || true
+            done
             echo "Checking for any remaining volumes..."
             DISK_IDS=$(diskutil list | grep "Install macOS" | awk '{print $1}' | grep "disk" || echo "")
             if [ -n "$DISK_IDS" ]; then
@@ -209,23 +212,31 @@ jobs:
                 diskutil unmountDisk force $DISK_ID || true
               done
             fi
-            echo "Waiting for resources to be freed..."
-            sleep 10
-            lsof | grep temp_image.sparseimage || true
+            echo "Ensuring no open file handles on sparseimage..."
+            for i in {1..5}; do
+              LSOF_OUTPUT=$(lsof | grep temp_image.sparseimage || true)
+              if [ -z "$LSOF_OUTPUT" ]; then
+                echo "No processes holding sparseimage."
+                break
+              else
+                echo "Sparseimage is still in use, waiting... (attempt $i)"
+                echo "$LSOF_OUTPUT"
+                sleep 10
+              fi
+            done
+            echo "Attempting to detach image explicitly..."
+            hdiutil detach "${{ github.workspace }}/temp_image.sparseimage" 2>/dev/null || true
             echo "Converting sparse image to DMG..."
             hdiutil convert "${{ github.workspace }}/temp_image.sparseimage" -format UDZO -o "$DMG_FILE" || {
-              echo "First conversion attempt failed, trying again after more waiting..."
+              echo "First conversion attempt failed, retrying after 30s..."
               sleep 30
               hdiutil convert "${{ github.workspace }}/temp_image.sparseimage" -format UDZO -o "$DMG_FILE"
             }
-            
-            # Only remove the sparse image if conversion succeeded
             if [ -f "$DMG_FILE" ]; then
               rm -f "${{ github.workspace }}/temp_image.sparseimage"
             else
               echo "Warning: DMG conversion failed, keeping sparse image"
             fi
-          fi
 
       - name: List Output
         run: |
