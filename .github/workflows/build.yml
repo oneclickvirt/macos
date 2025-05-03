@@ -237,6 +237,7 @@ jobs:
             else
               echo "Warning: DMG conversion failed, keeping sparse image"
             fi
+          fi
 
       - name: List Output
         run: |
