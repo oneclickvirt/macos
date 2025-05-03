@@ -11,17 +11,18 @@ jobs:
     strategy:
       matrix:
         include:
-          - macos_version: "15"
-            macos_name: "sequoia"
-            catalog: "publicrelease"  # 明确指定使用公开发布版本
+          # - macos_version: "15"
+          #   macos_name: "sequoia"
+          #   catalog: "publicrelease"
           # - macos_version: "14"
           #   macos_name: "sonoma"
           # - macos_version: "13"
           #   macos_name: "ventura"
           # - macos_version: "12"
           #   macos_name: "monterey"
-          # - macos_version: "11"
-          #   macos_name: "big_sur"
+          - macos_version: "11"
+            macos_name: "big_sur"
+            catalog: "publicrelease"
           # - macos_version: "10.15"
           #   macos_name: "catalina"
           # - macos_version: "10.14"
@@ -126,7 +127,7 @@ jobs:
             PKG_PATH=$(find . -name "*.pkg" | head -1)
           fi
           if [ -z "$PKG_PATH" ]; then
-            # 如果没有找到pkg，寻找dmg或app
+            # If no pkg found, look for dmg or app
             DMG_PATH=$(find . -name "*.dmg" -o -name "*.app" | head -1)
             if [ -n "$DMG_PATH" ]; then
               echo "Found DMG or APP: $DMG_PATH"
@@ -142,14 +143,11 @@ jobs:
           fi
           echo "Found package: $PKG_PATH"
           
-      - name: Create Installation Media
+      - name: Create Full Installation Image - Direct Method
         run: |
           MACOS_NAME="${{ matrix.macos_name }}"
           MACOS_VERSION="${{ matrix.macos_version }}"
-          if [ -f "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg" ]; then
-            echo "DMG already created, skipping installation media creation"
-            exit 0
-          fi
+          
           cd "$GITHUB_WORKSPACE/gibMacOS"
           DOWNLOADS_DIR=$(find . -type d -name "macOS Downloads" | head -1)
           cd "$DOWNLOADS_DIR"
@@ -163,62 +161,108 @@ jobs:
             echo "Error: No package found for installation media creation"
             exit 1
           fi
+          
           echo "Using package: $PKG_PATH"
           mkdir -p "$GITHUB_WORKSPACE/output"
-            hdiutil create -o "/tmp/${MACOS_NAME}_full.dmg" -size 14g -layout SPUD -fs HFS+J
-          hdiutil attach "/tmp/${MACOS_NAME}_full.dmg" -noverify -mountpoint /Volumes/install_build
+          
+          # Create a temporary working directory
+          WORK_DIR="$GITHUB_WORKSPACE/temp_work"
+          mkdir -p "$WORK_DIR"
+          
+          # Create and mount the output DMG
+          echo "Creating output DMG..."
+          hdiutil create -o "$WORK_DIR/${MACOS_NAME}_full.dmg" -size 14g -layout SPUD -fs HFS+J
+          hdiutil attach "$WORK_DIR/${MACOS_NAME}_full.dmg" -noverify -mountpoint /Volumes/install_build
+          
           echo "Available space on /Volumes/install_build:"
           df -h /Volumes/install_build
+          
+          # First, extract the InstallAssistant package to get the installer app
+          echo "Extracting InstallAssistant package..."
           sudo installer -pkg "$PKG_PATH" -target /Volumes/install_build
-          echo "Waiting for installer app to be extracted..."
-          TIMEOUT=900  # 15分钟超时
-          COUNT=0
-          INSTALLER_APP=""
-          while [ $COUNT -lt $TIMEOUT ]; do
-            # 扩大搜索范围到深度3
-            INSTALLER_APP="$(find /Volumes/install_build -name "Install*.app" -maxdepth 3)"
-            if [ -n "$INSTALLER_APP" ]; then
-              break
-            fi
-            # 每30秒显示一次详细调试信息
-            if [ $((COUNT % 30)) -eq 0 ]; then
-              echo "------- DEBUG INFO at $COUNT seconds -------"
-              echo "Looking for installation files:"
-              find /Volumes/install_build -type f -name "*.pkg" -o -name "*.app" | sort
-              echo "Running installation processes:"
-              ps aux | grep -i install
-              echo "Content of /Volumes/install_build:"
-              ls -la /Volumes/install_build
-              echo "----------------------------------------"
-            fi
-            sleep 5
-            COUNT=$((COUNT + 5))
-            echo "Still waiting... ($COUNT seconds)"
-          done
+          
+          # Check if the installer app exists
+          INSTALLER_APP=$(find /Volumes/install_build -name "Install*.app" -maxdepth 3 | head -1)
           if [ -z "$INSTALLER_APP" ]; then
-            echo "Error: Installer application not found after $TIMEOUT seconds!"
-            echo "Contents of /Volumes/install_build:"
-            ls -la /Volumes/install_build
-            echo "Searching entire volume for any .app files:"
-            find /Volumes/install_build -name "*.app" -type d
+            echo "Trying to extract InstallAssistant to local system..."
+            sudo installer -pkg "$PKG_PATH" -target /
+            INSTALLER_APP=$(find /Applications -name "Install*.app" -maxdepth 1 | head -1)
+          fi
+          
+          if [ -z "$INSTALLER_APP" ]; then
+            echo "Error: Could not find installer app. Direct extraction failed."
             hdiutil detach /Volumes/install_build -force
+            
+            # Try alternate approach - extract the SharedSupport.dmg directly
+            echo "Trying alternate approach with pkg extraction..."
+            mkdir -p "$WORK_DIR/pkg_extract"
+            cd "$WORK_DIR/pkg_extract"
+            
+            # Extract the pkg file
+            xar -xf "$PKG_PATH"
+            
+            # Find the payload
+            PAYLOAD=$(find . -name "Payload" | head -1)
+            if [ -n "$PAYLOAD" ]; then
+              mkdir -p payload_extract
+              cd payload_extract
+              cat "../$PAYLOAD" | gunzip -dc | cpio -i
+              
+              # Look for SharedSupport.dmg
+              SHARED_SUPPORT=$(find . -name "SharedSupport.dmg" | head -1)
+              if [ -n "$SHARED_SUPPORT" ]; then
+                echo "Found SharedSupport.dmg, creating installation image directly..."
+                cp "$SHARED_SUPPORT" "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
+                echo "Installation image created at $GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
+                ls -la "$GITHUB_WORKSPACE/output"
+                exit 0
+              fi
+            fi
+            
+            echo "Failed to create installation image through alternate methods."
             exit 1
           fi
+          
           echo "Found installer app: $INSTALLER_APP"
           ls -la "$INSTALLER_APP"
           ls -la "$INSTALLER_APP/Contents" || echo "Contents directory not accessible"
           ls -la "$INSTALLER_APP/Contents/Resources" || echo "Resources directory not accessible"
+          
+          # Search for SharedSupport.dmg if createinstallmedia is not available
+          SHARED_SUPPORT=$(find "$INSTALLER_APP" -name "SharedSupport.dmg" | head -1)
+          if [ -n "$SHARED_SUPPORT" ]; then
+            echo "Found SharedSupport.dmg, using direct copy method..."
+            cp "$SHARED_SUPPORT" "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
+            echo "Installation image created at $GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
+            hdiutil detach /Volumes/install_build -force
+            ls -la "$GITHUB_WORKSPACE/output"
+            exit 0
+          fi
+          
+          # Check if createinstallmedia exists and try to use it
           if [ ! -f "$INSTALLER_APP/Contents/Resources/createinstallmedia" ]; then
             echo "Error: createinstallmedia not found in $INSTALLER_APP!"
             echo "Contents of $INSTALLER_APP/Contents/Resources:"
             ls -la "$INSTALLER_APP/Contents/Resources"
-            echo "Trying to find createinstallmedia anywhere on the volume:"
-            find /Volumes/install_build -name "createinstallmedia" -type f
-            hdiutil detach /Volumes/install_build -force
-            exit 1
+            
+            # Try to find createinstallmedia anywhere
+            CM_PATH=$(find /Volumes/install_build -name "createinstallmedia" -type f | head -1)
+            if [ -z "$CM_PATH" ]; then
+              echo "Could not find createinstallmedia tool. Aborting."
+              hdiutil detach /Volumes/install_build -force
+              exit 1
+            fi
+            
+            echo "Found createinstallmedia at $CM_PATH"
+            sudo "$CM_PATH" --volume /Volumes/install_build --nointeraction
+          else
+            echo "Using createinstallmedia from $INSTALLER_APP"
+            sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume /Volumes/install_build --nointeraction
           fi
-          sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume /Volumes/install_build --nointeraction
+          
           sleep 20
+          
+          # Find the mounted volume name after createinstallmedia runs
           FINAL_VOLUME=$(df -h | grep "/Volumes/Install" | awk '{print $9}')
           if [ -z "$FINAL_VOLUME" ]; then
             FINAL_VOLUME=$(df -h | grep "/Volumes/Install" | awk '{print $NF}')
@@ -227,9 +271,12 @@ jobs:
             echo "Warning: Cannot find final volume, using original mount point"
             FINAL_VOLUME="/Volumes/install_build"
           fi
+          
           echo "Detaching volume: $FINAL_VOLUME"
           hdiutil detach "$FINAL_VOLUME" -force
-          hdiutil convert "/tmp/${MACOS_NAME}_full.dmg" -format UDZO -o "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
+          
+          # Convert to compressed DMG
+          hdiutil convert "$WORK_DIR/${MACOS_NAME}_full.dmg" -format UDZO -o "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
           ls -lah "$GITHUB_WORKSPACE/output"
           
       - name: Create Release Notes and Push to Repository
@@ -268,7 +315,7 @@ jobs:
             git checkout -b ${{ matrix.macos_name }}-build origin/${{ matrix.macos_name }}-build
           else
             git checkout --orphan ${{ matrix.macos_name }}-build
-            # 创建新分支时清空工作区
+            # Clear working directory when creating new branch
             git rm -rf . || true
           fi
           mkdir -p "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME"
