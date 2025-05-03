@@ -60,8 +60,6 @@ jobs:
           git clone https://github.com/corpnewt/gibMacOS.git
           cd gibMacOS
           chmod +x gibMacOS.command
-          chmod +x Scripts/*.py
-          chmod +x Scripts/*.command
       - name: Download macOS components
         working-directory: ${{ github.workspace }}/gibMacOS
         run: |
@@ -90,7 +88,7 @@ jobs:
         working-directory: ${{ github.workspace }}/gibMacOS
         run: |
           mkdir -p "${{ github.workspace }}/output"
-          cd Scripts
+          # cd Scripts
           if [[ "${{ matrix.macos_version_number }}" == "11"* || "${{ matrix.macos_version_number }}" == "12"* || "${{ matrix.macos_version_number }}" == "13"* || "${{ matrix.macos_version_number }}" == "14"* || "${{ matrix.macos_version_number }}" == "15"* ]]; then
             echo "Processing macOS >= 11 (Big Sur and newer)"
             INSTALLER_PKG=$(find "$DOWNLOAD_DIR" -name "InstallAssistant*.pkg" | head -n 1)
