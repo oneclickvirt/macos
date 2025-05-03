@@ -51,7 +51,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
+    
       - name: Set up Python 3.10
         uses: actions/setup-python@v4
         with:
@@ -59,251 +59,37 @@ jobs:
           
       - name: Install Dependencies
         run: |
-          brew install coreutils
-          brew install git
-          
+          brew install coreutils git
+    
       - name: Clone and Setup gibMacOS
-        working-directory: ${{ github.workspace }}
         run: |
           git clone https://github.com/corpnewt/gibMacOS.git
           cd gibMacOS
           python -m venv .venv
           source .venv/bin/activate
           pip install pyyaml requests
-          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
-          echo "$VIRTUAL_ENV/bin" >> $GITHUB_PATH
           chmod +x gibMacOS.command
-          mkdir -p output
-      
-      - name: Download macOS Installation Package
+        # 保证后续所有脚本都能使用虚拟环境里的工具
+        env:
+          PATH: ${{ github.workspace }}/gibMacOS/.venv/bin:${{ env.PATH }}
+    
+      - name: Build Full macOS DMG with gibMacOS
         working-directory: ${{ github.workspace }}/gibMacOS
         run: |
           source .venv/bin/activate
-          ./gibMacOS.command --no-interactive --catalog ${{ matrix.catalog || 'publicrelease' }} --maxos ${{ matrix.macos_version }} --latest
-          
-      - name: List Download Content
-        working-directory: ${{ github.workspace }}/gibMacOS
+          # -b 后面跟你的版本简称（如 Sequoia、Monterey 等）
+          # -d 后面跟输出目录，这里指向 repo 根目录下的 output
+          ./gibMacOS.command --no-interactive \
+                            --catalog ${{ matrix.catalog || 'publicrelease' }} \
+                            --maxos ${{ matrix.macos_version }} \
+                            -b ${{ matrix.macos_name }} \
+                            -d "${{ github.workspace }}/output"
+    
+      - name: List Output
         run: |
-          source .venv/bin/activate
-          DOWNLOADS_DIR=$(find . -type d -name "macOS Downloads" | head -1)
-          if [ -z "$DOWNLOADS_DIR" ]; then
-            echo "Error: Could not find macOS Downloads directory"
-            exit 1
-          fi
-          echo "Contents of $DOWNLOADS_DIR:"
-          ls -la "$DOWNLOADS_DIR"
-          find "$DOWNLOADS_DIR" -type f -name "*.pkg" | sort
-          find "$DOWNLOADS_DIR" -type f -name "*.dmg" | sort
-          find "$DOWNLOADS_DIR" -type d -name "*.app" | sort
-          
-      - name: Process Downloads
-        working-directory: ${{ github.workspace }}/gibMacOS
-        run: |
-          source .venv/bin/activate
-          MACOS_NAME="${{ matrix.macos_name }}"
-          MACOS_VERSION="${{ matrix.macos_version }}"
-          echo "Building macOS version: $MACOS_NAME ($MACOS_VERSION)"
-          DOWNLOADS_DIR=$(find . -type d -name "macOS Downloads" | head -1)
-          if [ -z "$DOWNLOADS_DIR" ]; then
-            echo "Error: Could not find macOS Downloads directory"
-            exit 1
-          fi
-          cd "$DOWNLOADS_DIR"
-          DOWNLOAD_DIR=$(find . -type d -mindepth 1 -maxdepth 1 | head -1)
-          if [ -z "$DOWNLOAD_DIR" ]; then
-            echo "Error: Download directory not found!"
-            exit 1
-          fi
-          cd "$DOWNLOAD_DIR"
-          echo "Currently in directory: $(pwd)"
-          PKG_DIR="$(pwd)"
-          if [ -d "$(find . -name "*.pkg" -o -name "*.dmg" | head -1 | xargs dirname 2>/dev/null)" ]; then
-            PKG_DIR="$(find . -name "*.pkg" -o -name "*.dmg" | head -1 | xargs dirname)"
-            cd "$PKG_DIR"
-            echo "Changed to package directory: $(pwd)"
-          fi
-          PKG_PATH=$(find . -name "*.pkg" | grep -i "InstallAssistant" | head -1)
-          if [ -z "$PKG_PATH" ]; then
-            PKG_PATH=$(find . -name "*.pkg" | head -1)
-          fi
-          if [ -z "$PKG_PATH" ]; then
-            # If no pkg found, look for dmg or app
-            DMG_PATH=$(find . -name "*.dmg" -o -name "*.app" | head -1)
-            if [ -n "$DMG_PATH" ]; then
-              echo "Found DMG or APP: $DMG_PATH"
-              mkdir -p "$GITHUB_WORKSPACE/output"
-              cp "$DMG_PATH" "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
-              echo "Directly copied installation image to output directory"
-              ls -la "$GITHUB_WORKSPACE/output"
-              exit 0
-            else
-              echo "Error: No installation package found!"
-              exit 1
-            fi
-          fi
-          echo "Found package: $PKG_PATH"
-          
-      # - name: Create Full Installation Image - Direct Method
-      #   run: |
-      #     MACOS_NAME="${{ matrix.macos_name }}"
-      #     MACOS_VERSION="${{ matrix.macos_version }}"
-          
-      #     cd "$GITHUB_WORKSPACE/gibMacOS"
-      #     DOWNLOADS_DIR=$(find . -type d -name "macOS Downloads" | head -1)
-      #     cd "$DOWNLOADS_DIR"
-      #     DOWNLOAD_DIR=$(find . -type d -mindepth 1 -maxdepth 1 | head -1)
-      #     cd "$DOWNLOAD_DIR"
-      #     PKG_PATH=$(find . -name "*.pkg" | grep -i "InstallAssistant" | head -1)
-      #     if [ -z "$PKG_PATH" ]; then
-      #       PKG_PATH=$(find . -name "*.pkg" | head -1)
-      #     fi
-      #     if [ -z "$PKG_PATH" ]; then
-      #       echo "Error: No package found for installation media creation"
-      #       exit 1
-      #     fi
-          
-      #     echo "Using package: $PKG_PATH"
-      #     mkdir -p "$GITHUB_WORKSPACE/output"
-          
-      #     # Create a temporary working directory
-      #     WORK_DIR="$GITHUB_WORKSPACE/temp_work"
-      #     mkdir -p "$WORK_DIR"
-          
-      #     # Create and mount the output DMG
-      #     echo "Creating output DMG..."
-      #     hdiutil create -o "$WORK_DIR/${MACOS_NAME}_full.dmg" -size 14g -layout SPUD -fs HFS+J
-      #     hdiutil attach "$WORK_DIR/${MACOS_NAME}_full.dmg" -noverify -mountpoint /Volumes/install_build
-          
-      #     echo "Available space on /Volumes/install_build:"
-      #     df -h /Volumes/install_build
-          
-      #     # First, extract the InstallAssistant package to get the installer app
-      #     echo "Extracting InstallAssistant package..."
-      #     sudo installer -pkg "$PKG_PATH" -target /Volumes/install_build
-          
-      #     # Check if the installer app exists
-      #     INSTALLER_APP=$(find /Volumes/install_build -name "Install*.app" -maxdepth 3 | head -1)
-      #     if [ -z "$INSTALLER_APP" ]; then
-      #       echo "Trying to extract InstallAssistant to local system..."
-      #       sudo installer -pkg "$PKG_PATH" -target /
-      #       INSTALLER_APP=$(find /Applications -name "Install*.app" -maxdepth 1 | head -1)
-      #     fi
-          
-      #     if [ -z "$INSTALLER_APP" ]; then
-      #       echo "Error: Could not find installer app. Direct extraction failed."
-      #       hdiutil detach /Volumes/install_build -force
-            
-      #       # Try alternate approach - extract the SharedSupport.dmg directly
-      #       echo "Trying alternate approach with pkg extraction..."
-      #       mkdir -p "$WORK_DIR/pkg_extract"
-      #       cd "$WORK_DIR/pkg_extract"
-            
-      #       # Extract the pkg file
-      #       xar -xf "$PKG_PATH"
-            
-      #       # Find the payload
-      #       PAYLOAD=$(find . -name "Payload" | head -1)
-      #       if [ -n "$PAYLOAD" ]; then
-      #         mkdir -p payload_extract
-      #         cd payload_extract
-      #         cat "../$PAYLOAD" | gunzip -dc | cpio -i
+          ls -lh ${{ github.workspace }}/output
+    
               
-      #         # Look for SharedSupport.dmg
-      #         SHARED_SUPPORT=$(find . -name "SharedSupport.dmg" | head -1)
-      #         if [ -n "$SHARED_SUPPORT" ]; then
-      #           echo "Found SharedSupport.dmg, creating installation image directly..."
-      #           cp "$SHARED_SUPPORT" "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
-      #           echo "Installation image created at $GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
-      #           ls -la "$GITHUB_WORKSPACE/output"
-      #           exit 0
-      #         fi
-      #       fi
-            
-      #       echo "Failed to create installation image through alternate methods."
-      #       exit 1
-      #     fi
-          
-      #     echo "Found installer app: $INSTALLER_APP"
-      #     ls -la "$INSTALLER_APP"
-      #     ls -la "$INSTALLER_APP/Contents" || echo "Contents directory not accessible"
-      #     ls -la "$INSTALLER_APP/Contents/Resources" || echo "Resources directory not accessible"
-          
-      #     # Search for SharedSupport.dmg if createinstallmedia is not available
-      #     SHARED_SUPPORT=$(find "$INSTALLER_APP" -name "SharedSupport.dmg" | head -1)
-      #     if [ -n "$SHARED_SUPPORT" ]; then
-      #       echo "Found SharedSupport.dmg, using direct copy method..."
-      #       cp "$SHARED_SUPPORT" "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
-      #       echo "Installation image created at $GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
-      #       hdiutil detach /Volumes/install_build -force
-      #       ls -la "$GITHUB_WORKSPACE/output"
-      #       exit 0
-      #     fi
-          
-      #     # Check if createinstallmedia exists and try to use it
-      #     if [ ! -f "$INSTALLER_APP/Contents/Resources/createinstallmedia" ]; then
-      #       echo "Error: createinstallmedia not found in $INSTALLER_APP!"
-      #       echo "Contents of $INSTALLER_APP/Contents/Resources:"
-      #       ls -la "$INSTALLER_APP/Contents/Resources"
-            
-      #       # Try to find createinstallmedia anywhere
-      #       CM_PATH=$(find /Volumes/install_build -name "createinstallmedia" -type f | head -1)
-      #       if [ -z "$CM_PATH" ]; then
-      #         echo "Could not find createinstallmedia tool. Aborting."
-      #         hdiutil detach /Volumes/install_build -force
-      #         exit 1
-      #       fi
-            
-      #       echo "Found createinstallmedia at $CM_PATH"
-      #       sudo "$CM_PATH" --volume /Volumes/install_build --nointeraction
-      #     else
-      #       echo "Using createinstallmedia from $INSTALLER_APP"
-      #       sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume /Volumes/install_build --nointeraction
-      #     fi
-          
-      #     sleep 20
-          
-      #     # Find the mounted volume name after createinstallmedia runs
-      #     FINAL_VOLUME=$(df -h | grep "/Volumes/Install" | awk '{print $9}')
-      #     if [ -z "$FINAL_VOLUME" ]; then
-      #       FINAL_VOLUME=$(df -h | grep "/Volumes/Install" | awk '{print $NF}')
-      #     fi
-      #     if [ -z "$FINAL_VOLUME" ]; then
-      #       echo "Warning: Cannot find final volume, using original mount point"
-      #       FINAL_VOLUME="/Volumes/install_build"
-      #     fi
-          
-      #     echo "Detaching volume: $FINAL_VOLUME"
-      #     hdiutil detach "$FINAL_VOLUME" -force
-          
-      #     # Convert to compressed DMG
-      #     hdiutil convert "$WORK_DIR/${MACOS_NAME}_full.dmg" -format UDZO -o "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
-      #     ls -lah "$GITHUB_WORKSPACE/output"
-
-      - name: Create Full Installation Image - Direct Copy SharedSupport
-        run: |
-          # 从工作区进入 gibMacOS 下载目录
-          cd "$GITHUB_WORKSPACE/gibMacOS"
-          DOWNLOADS_DIR=$(find . -type d -name "macOS Downloads" | head -1)
-          if [ -z "$DOWNLOADS_DIR" ]; then
-            echo "Error: 找不到 macOS Downloads 目录"
-            exit 1
-          fi
-          cd "$DOWNLOADS_DIR"
-          DOWNLOAD_DIR=$(find . -mindepth 1 -maxdepth 1 -type d | head -1)
-          if [ -z "$DOWNLOAD_DIR" ]; then
-            echo "Error: 找不到任何版本目录"
-            exit 1
-          fi
-          cd "$DOWNLOAD_DIR"
-          SHARED_SUPPORT=$(find . -name "SharedSupport.dmg" | head -1)
-          if [ -z "$SHARED_SUPPORT" ]; then
-            echo "Error: 找不到 SharedSupport.dmg"
-            exit 1
-          fi
-          mkdir -p "$GITHUB_WORKSPACE/output"
-          cp "$SHARED_SUPPORT" "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
-          ls -la "$GITHUB_WORKSPACE/output"
-          
       - name: Create Release Notes and Push to Repository
         working-directory: ${{ github.workspace }}
         run: |
