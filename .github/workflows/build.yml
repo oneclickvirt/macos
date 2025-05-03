@@ -2,21 +2,8 @@ name: macOS Image Builder
 
 on:
   workflow_dispatch:
-    inputs:
-      macos_version:
-        description: 'macOS version number'
-        required: true
-        default: '15'
-      macos_name:
-        description: 'macOS version name'
-        required: true
-        default: 'sequoia'
-      catalog:
-        description: 'Apple catalog to use'
-        required: true
-        default: 'publicrelease'
-  schedule:
-    - cron: '0 0 1 * *'  # Run monthly on the 1st
+  # schedule:
+  #   - cron: '0 0 1 * *'  # Run monthly on the 1st
 
 jobs:
   build:
@@ -63,68 +50,61 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
       - name: Install Dependencies
         run: |
-          brew install python3 coreutils
-          pip3 install pyyaml requests
+          brew install coreutils
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install pyyaml requests
+          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
+          echo "$VIRTUAL_ENV/bin" >> $GITHUB_PATH
 
       - name: Setup gibMacOS & Environment
         run: |
           chmod +x gibMacOS.command
           mkdir -p output
+          source .venv/bin/activate
 
       - name: Download macOS Installer
         run: |
-          # Download specified macOS version
+          source .venv/bin/activate
           ./gibMacOS.command --no-interactive --catalog ${{ matrix.catalog || 'publicrelease' }} --maxos ${{ matrix.macos_version }} --latest --recovery
 
       - name: Prepare for Distribution
         run: |
+          source .venv/bin/activate
           cd "$(find . -type d -name "macOS Downloads" | head -1)" || { echo "Could not find macOS Downloads directory"; exit 1; }
-          
-          # Find download directory
           DOWNLOAD_DIR=$(find . -type d -name "*" -mindepth 1 -maxdepth 1 | head -1)
           if [ -z "$DOWNLOAD_DIR" ]; then
             echo "Error: Download directory not found!"
             exit 1
           fi
           cd "$DOWNLOAD_DIR"
-          
-          # Use the provided macOS name and version
           MACOS_NAME="${{ matrix.macos_name }}"
           MACOS_VERSION="${{ matrix.macos_version }}"
           echo "Building macOS version: $MACOS_NAME ($MACOS_VERSION)"
-          
           echo "Creating DMG file..."
-          
-          # Find package directory
           if [ -d "$(find . -name "*.pkg" -o -name "*.dmg" | head -1 | xargs dirname)" ]; then
             cd "$(find . -name "*.pkg" -o -name "*.dmg" | head -1 | xargs dirname)"
           fi
-          
-          # Try to find the installer package
           PKG_PATH=$(find . -name "*.pkg" | grep -i "InstallAssistant" | head -1)
-          
-          # If not found, try RecoveryHDUpdate.pkg
           if [ -z "$PKG_PATH" ]; then
             PKG_PATH=$(find . -name "*.pkg" | grep -i "RecoveryHDUpdate" | head -1)
           fi
-          
-          # If still not found, try any pkg file
           if [ -z "$PKG_PATH" ]; then
             PKG_PATH=$(find . -name "*.pkg" | head -1)
           fi
-          
-          # Check for DMG or APP files (for older OS X versions)
           if [ -z "$PKG_PATH" ]; then
             DMG_PATH=$(find . -name "*.dmg" -o -name "*.app" | head -1)
             if [ -n "$DMG_PATH" ]; then
               echo "Found DMG or APP: $DMG_PATH"
-              # Copy DMG file directly to output directory
               mkdir -p "$GITHUB_WORKSPACE/output"
               cp "$DMG_PATH" "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
-              
-              # Skip further processing for older versions
               echo "Directly copied installation image to output directory"
               exit 0
             else
@@ -132,44 +112,29 @@ jobs:
               exit 1
             fi
           fi
-          
           echo "Found package: $PKG_PATH"
-          
-          # Create DMG file
           hdiutil create -o "/tmp/${MACOS_NAME}_full.dmg" -size 16g -layout SPUD -fs HFS+J
           hdiutil attach "/tmp/${MACOS_NAME}_full.dmg" -noverify -mountpoint /Volumes/install_build
-          
-          # Install and extract
           sudo installer -pkg "$PKG_PATH" -target /Volumes/install_build
-          
-          # Find installer app
           INSTALLER_APP="$(find /Volumes/install_build -name "Install*.app" -maxdepth 1)"
           if [ -z "$INSTALLER_APP" ]; then
             echo "Error: Installer application not found!"
             hdiutil detach /Volumes/install_build
             exit 1
           fi
-          
           echo "Found installer app: $INSTALLER_APP"
-          
-          # Create full bootable installation image
           sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume /Volumes/install_build --nointeraction
-          
-          # Unmount and compress DMG
           sleep 5
           FINAL_VOLUME=$(df -h | grep "/Volumes/Install" | awk '{print $9}')
           hdiutil detach "$FINAL_VOLUME" -force
           hdiutil convert "/tmp/${MACOS_NAME}_full.dmg" -format UDZO -o "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
-          
-          # Display file size information
           cd "$GITHUB_WORKSPACE/output"
           ls -lah
 
       - name: Create Release Metadata
         run: |
+          source .venv/bin/activate
           cd output
-          
-          # Get macOS name and version
           MACOS_NAME="${{ matrix.macos_name }}"
           MACOS_VERSION="${{ matrix.macos_version }}"
           
@@ -177,8 +142,6 @@ jobs:
             echo "Warning: Output file not found!"
             exit 1
           fi
-          
-          # Create description file
           echo "# macOS Installation Image - $MACOS_NAME ($MACOS_VERSION)" > release_notes.txt
           echo "" >> release_notes.txt
           echo "This is an automatically built complete macOS installation image." >> release_notes.txt
@@ -202,21 +165,12 @@ jobs:
           
       - name: Push to Repository
         run: |
-          # Setup Git credentials
           git remote -v
           git remote add cnb https://cnb:${{ secrets.GIT_TOKEN }}@cnb.cool/oneclickvirt/template.git
           git remote -v
-          
-          # Create a branch for the macOS version if it doesn't exist
           git checkout -b ${{ matrix.macos_name }}-build || git checkout ${{ matrix.macos_name }}-build
-          
-          # Move files to Git-managed directory
           mkdir -p macOS-images/${{ matrix.macos_name }}
           cp -f output/* macOS-images/${{ matrix.macos_name }}/
-          
-          # Add and commit files
           git add macOS-images/${{ matrix.macos_name }}/* 
           git commit -m "Add macOS ${{ matrix.macos_name }} (${{ matrix.macos_version }}) installation image"
-          
-          # Push to remote repository
           git push -u cnb ${{ matrix.macos_name }}-build:main
