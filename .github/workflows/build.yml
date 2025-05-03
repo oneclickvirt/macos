@@ -77,8 +77,9 @@ jobs:
           ./gibMacOS.command --no-interactive \
                             --catalog ${{ matrix.catalog }} \
                             --maxos ${{ matrix.macos_version }} \
+                            --dmg \
                             -b ${{ matrix.macos_name }} \
-                            -d "${{ github.workspace }}/output"
+                            -o "${{ github.workspace }}/output"
       - name: List Output
         run: |
           ls -lh ${{ github.workspace }}/output
