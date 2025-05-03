@@ -137,10 +137,11 @@ jobs:
             rm -f "${{ github.workspace }}/temp_image.sparseimage"
           else
             echo "Processing macOS <= 10.15 (Catalina and older)"
-            python3 BuildmacOSInstallApp.py --catalog ${{ matrix.catalog }} \
-                                           --path "$DOWNLOAD_DIR" \
-                                           --output "${{ github.workspace }}/installer_app"
-            if [ ! -d "${{ github.workspace }}/installer_app" ]; then
+            rm -rf "${{ github.workspace }}/BuildmacOSInstallApp.py"
+            wget https://raw.githubusercontent.com/oneclickvirt/macos/refs/heads/main/BuildmacOSInstallApp.py -O "${{ github.workspace }}/BuildmacOSInstallApp.py" 
+            chmod +x "${{ github.workspace }}/BuildmacOSInstallApp.py"
+            python3 "${{ github.workspace }}/BuildmacOSInstallApp.py" "$DOWNLOAD_DIR" "${{ github.workspace }}/installer_app"
+            if [ $? -ne 0 ]; then
               echo "Error: Failed to build installer app"
               exit 1
             fi
