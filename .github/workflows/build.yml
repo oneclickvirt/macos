@@ -132,19 +132,34 @@ jobs:
             sleep 5
             echo "Unmounting volume..."
             # Get actual mounted volume name after createinstallmedia
-            INSTALL_VOL=$(diskutil list | grep "Install macOS" | awk '{print $NF}')
-            if [ -n "$INSTALL_VOL" ]; then
-              echo "Found volume: $INSTALL_VOL"
-              diskutil unmount "/Volumes/$INSTALL_VOL" || true
-            else
-              echo "Trying to unmount all possible volume names..."
-              diskutil unmount "/Volumes/Install macOS ${{ matrix.macos_name }}" 2>/dev/null || true
-              diskutil unmount "$MOUNT_POINT" 2>/dev/null || true
-              for vol in $(ls -1 /Volumes/ | grep "Install macOS"); do
-                echo "Trying to unmount /Volumes/$vol"
-                diskutil unmount "/Volumes/$vol" 2>/dev/null || true
+            echo "Listing all volumes:"
+            ls -la /Volumes/
+            
+            # Unmount any volume containing "Install macOS"
+            echo "Searching for Install macOS volumes..."
+            for vol in $(ls -1 /Volumes/ | grep "Install macOS"); do
+              echo "Trying to unmount /Volumes/$vol"
+              diskutil unmount "/Volumes/$vol" 2>/dev/null || true
+            done
+            
+            # Unmount the original mount point as fallback
+            echo "Trying to unmount original mount point: $MOUNT_POINT"
+            diskutil unmount "$MOUNT_POINT" 2>/dev/null || true
+            
+            # Detach all Install macOS related disks with force
+            echo "Checking for any remaining volumes..."
+            DISK_IDS=$(diskutil list | grep "Install macOS" | awk '{print $1}' | grep "disk" || echo "")
+            if [ -n "$DISK_IDS" ]; then
+              echo "Found remaining disks, forcing detach..."
+              for DISK_ID in $DISK_IDS; do
+                echo "Force detaching $DISK_ID"
+                diskutil unmountDisk force $DISK_ID || true
               done
             fi
+            
+            # Wait a moment for resources to be freed
+            echo "Waiting for resources to be freed..."
+            sleep 10
             echo "Converting sparse image to DMG..."
             hdiutil convert "${{ github.workspace }}/temp_image.sparseimage" -format UDZO -o "$DMG_FILE"
             rm -f "${{ github.workspace }}/temp_image.sparseimage"
@@ -176,29 +191,40 @@ jobs:
             echo "Unmounting volume..."
             echo "Listing all volumes:"
             ls -la /Volumes/
-            INSTALL_VOL=$(ls -1 /Volumes/ | grep -i "Install.*${matrix.macos_name}" || ls -1 /Volumes/ | grep -i "Install macOS" || echo "")
-            if [ -n "$INSTALL_VOL" ]; then
-              echo "Found volume: $INSTALL_VOL"
-              diskutil unmount "/Volumes/$INSTALL_VOL" || true
-            else
-              echo "Trying to unmount all possible volume names..."
-              diskutil unmount "/Volumes/Install macOS ${{ matrix.macos_name }}" 2>/dev/null || true
-              diskutil unmount "/Volumes/Install macOS High Sierra" 2>/dev/null || true
-              diskutil unmount "$MOUNT_POINT" 2>/dev/null || true
-              for vol in $(ls -1 /Volumes/ | grep "Install macOS"); do
-                echo "Trying to unmount /Volumes/$vol"
-                diskutil unmount "/Volumes/$vol" 2>/dev/null || true
+            echo "Unmounting Install macOS High Sierra volume"
+            diskutil unmount "/Volumes/Install macOS High Sierra" 2>/dev/null || true
+            echo "Searching for other Install macOS volumes..."
+            for vol in $(ls -1 /Volumes/ | grep "Install macOS"); do
+              echo "Trying to unmount /Volumes/$vol"
+              diskutil unmount "/Volumes/$vol" 2>/dev/null || true
+            done
+            echo "Trying to unmount original mount point: $MOUNT_POINT"
+            diskutil unmount "$MOUNT_POINT" 2>/dev/null || true
+            echo "Checking for any remaining volumes..."
+            DISK_IDS=$(diskutil list | grep "Install macOS" | awk '{print $1}' | grep "disk" || echo "")
+            if [ -n "$DISK_IDS" ]; then
+              echo "Found remaining disks, forcing detach..."
+              for DISK_ID in $DISK_IDS; do
+                echo "Force detaching $DISK_ID"
+                diskutil unmountDisk force $DISK_ID || true
               done
             fi
-            echo "Checking for any remaining volumes..."
-            REMAINING_VOLS=$(diskutil list | grep "Install macOS" || echo "")
-            if [ -n "$REMAINING_VOLS" ]; then
-              echo "Found remaining volumes, forcing detach..."
-              diskutil list | grep "Install macOS" | awk '{print $NF}' | xargs -I{} diskutil unmountDisk force /dev/{}
-            fi
+            echo "Waiting for resources to be freed..."
+            sleep 10
+            lsof | grep temp_image.sparseimage || true
             echo "Converting sparse image to DMG..."
-            hdiutil convert "${{ github.workspace }}/temp_image.sparseimage" -format UDZO -o "$DMG_FILE"
-            rm -f "${{ github.workspace }}/temp_image.sparseimage"
+            hdiutil convert "${{ github.workspace }}/temp_image.sparseimage" -format UDZO -o "$DMG_FILE" || {
+              echo "First conversion attempt failed, trying again after more waiting..."
+              sleep 30
+              hdiutil convert "${{ github.workspace }}/temp_image.sparseimage" -format UDZO -o "$DMG_FILE"
+            }
+            
+            # Only remove the sparse image if conversion succeeded
+            if [ -f "$DMG_FILE" ]; then
+              rm -f "${{ github.workspace }}/temp_image.sparseimage"
+            else
+              echo "Warning: DMG conversion failed, keeping sparse image"
+            fi
           fi
 
       - name: List Output
