@@ -206,7 +206,7 @@ jobs:
             for i in {1..5}; do
               hdiutil detach "$DISK_DEV" && break
               echo "Detach attempt $i failed, retrying in 10s..."
-              sleep 10
+              sleep 30
             done
             echo "Converting sparse image to DMG..."
             hdiutil convert "${{ github.workspace }}/temp_image.sparseimage" -format UDZO -o "$DMG_FILE" || {
