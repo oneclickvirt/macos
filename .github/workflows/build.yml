@@ -230,13 +230,6 @@ jobs:
           fi
           echo "Successfully created ${{ matrix.macos_name }}_full.dmg"
     
-      - name: Setup Git LFS
-        run: |
-          git lfs install
-          git lfs track "*.dmg"
-          git add .gitattributes
-          git commit -m "Add .dmg file type to Git LFS tracking"
-      
       - name: Create Release Push to Repository
         working-directory: ${{ github.workspace }}
         run: |
@@ -254,13 +247,16 @@ jobs:
           git init
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
+          git lfs install
+          git lfs track "*.dmg"
+          git add .gitattributes
+          git commit -m "Track .dmg files via Git LFS"
           git remote add origin https://cnb:${{ secrets.GIT_TOKEN }}@cnb.cool/oneclickvirt/template.git
           git fetch origin
           if git ls-remote --heads origin ${{ matrix.macos_name }}-build | grep -q ${{ matrix.macos_name }}-build; then
             git checkout -b ${{ matrix.macos_name }}-build origin/${{ matrix.macos_name }}-build
           else
             git checkout --orphan ${{ matrix.macos_name }}-build
-            # Clear working directory when creating new branch
             git rm -rf . || true
           fi
           mkdir -p "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME"
