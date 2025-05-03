@@ -199,7 +199,7 @@ jobs:
               else
                 echo "Sparseimage is still in use, waiting... (attempt $i)"
                 echo "$LSOF_OUTPUT"
-                sleep 10
+                sleep 60
               fi
             done
             echo "Detaching disk: $DISK_DEV"
