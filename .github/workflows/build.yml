@@ -20,7 +20,7 @@ jobs:
           #   macos_name: "ventura"
           # - macos_version: "12"
           #   macos_name: "monterey"
-          - macos_version: "11"
+          - macos_version: "10.16"
             macos_name: "big_sur"
             catalog: "publicrelease"
           # - macos_version: "10.15"
