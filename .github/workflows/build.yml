@@ -51,41 +51,34 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-    
+
       - name: Set up Python 3.10
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-          
-      - name: Install Dependencies
-        run: |
-          brew install coreutils
-    
+
+      - name: Install coreutils
+        run: brew install coreutils
+
       - name: Clone and Setup gibMacOS
         run: |
-          brew install git
           git clone https://github.com/corpnewt/gibMacOS.git
           cd gibMacOS
-          python -m venv .venv
+          python3 -m venv .venv
           source .venv/bin/activate
-          pip install pyyaml requests
+          pip install --upgrade pip pyyaml requests
           chmod +x gibMacOS.command
-        # 保证后续所有脚本都能使用虚拟环境里的工具
-        env:
-          PATH: ${{ github.workspace }}/gibMacOS/.venv/bin:${{ env.PATH }}
-    
+          export PATH="${PWD}/.venv/bin:${PATH}"
+
       - name: Build Full macOS DMG with gibMacOS
         working-directory: ${{ github.workspace }}/gibMacOS
         run: |
           source .venv/bin/activate
-          # -b 后面跟你的版本简称（如 Sequoia、Monterey 等）
-          # -d 后面跟输出目录，这里指向 repo 根目录下的 output
           ./gibMacOS.command --no-interactive \
-                            --catalog ${{ matrix.catalog || 'publicrelease' }} \
+                            --catalog ${{ matrix.catalog }} \
                             --maxos ${{ matrix.macos_version }} \
                             -b ${{ matrix.macos_name }} \
                             -d "${{ github.workspace }}/output"
-    
       - name: List Output
         run: |
           ls -lh ${{ github.workspace }}/output
