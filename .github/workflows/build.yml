@@ -13,84 +13,182 @@ jobs:
         include:
           - macos_version: "17G66"
             macos_name: "high-sierra"
-            maxos_version: "10.13"
+            macos_version_number: "10.13"
             catalog: "publicrelease"
-          - macos_version: "18F2059"
-            macos_name: "mojave"
-            maxos_version: "10.14"
-            catalog: "publicrelease"
-          - macos_version: "19D2064"
-            macos_name: "catalina"
-            maxos_version: "10.15"
-            catalog: "publicrelease"
-          - macos_version: "20G1427"
-            macos_name: "big-sur"
-            maxos_version: "11.7"
-            catalog: "publicrelease"
-          - macos_version: "21H1123"
-            macos_name: "monterey"
-            maxos_version: "12.6"
-            catalog: "publicrelease"
-          - macos_version: "22H313"
-            macos_name: "ventura"
-            maxos_version: "13"
-            catalog: "publicrelease"
-          - macos_version: "23H311"
-            macos_name: "sonoma"
-            maxos_version: "14"
-            catalog: "publicrelease"
-          - macos_version: "24C101"
-            macos_name: "sequoia"
-            maxos_version: "15"
-            catalog: "publicrelease"
+          # - macos_version: "18F2059"
+          #   macos_name: "mojave"
+          #   macos_version_number: "10.14"
+          #   catalog: "publicrelease"
+          # - macos_version: "19D2064"
+          #   macos_name: "catalina"
+          #   macos_version_number: "10.15"
+          #   catalog: "publicrelease"
+          # - macos_version: "20G1427"
+          #   macos_name: "big-sur"
+          #   macos_version_number: "11.7"
+          #   catalog: "publicrelease"
+          # - macos_version: "21H1123"
+          #   macos_name: "monterey"
+          #   macos_version_number: "12.6"
+          #   catalog: "publicrelease"
+          # - macos_version: "22H313"
+          #   macos_name: "ventura"
+          #   macos_version_number: "13"
+          #   catalog: "publicrelease"
+          # - macos_version: "23H311"
+          #   macos_name: "sonoma"
+          #   macos_version_number: "14"
+          #   catalog: "publicrelease"
+          # - macos_version: "24C101"
+          #   macos_name: "sequoia"
+          #   macos_version_number: "15"
+          #   catalog: "publicrelease"
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
       - name: Set up Python 3.10
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-
-      - name: Install coreutils
-        run: brew install coreutils
-
-      - name: Clone and Setup gibMacOS
+      - name: Install dependencies
+        run: |
+          brew install coreutils wget
+          pip install requests pyyaml
+      - name: Clone gibMacOS
         run: |
           git clone https://github.com/corpnewt/gibMacOS.git
           cd gibMacOS
-          python3 -m venv .venv
-          source .venv/bin/activate
-          pip install --upgrade pip pyyaml requests
           chmod +x gibMacOS.command
-          export PATH="${PWD}/.venv/bin:${PATH}"
-
-      - name: Build Full macOS DMG with gibMacOS
+          chmod +x Scripts/*.py
+          chmod +x Scripts/*.command
+      - name: Download macOS components
         working-directory: ${{ github.workspace }}/gibMacOS
         run: |
-          source .venv/bin/activate
-          ./gibMacOS.command --no-interactive \
-                            --catalog ${{ matrix.catalog }} \
-                            --maxos ${{ matrix.maxos_version }} \
-                            --version ${{ matrix.maxos_version }} \
-                            --dmg \
-                            -b ${{ matrix.macos_version }} \
-                            -o "${{ github.workspace }}/output"
+          python3 gibMacOS.py --catalog ${{ matrix.catalog }} \
+                             --os ${{ matrix.macos_version_number }} \
+                             --version ${{ matrix.macos_version }} \
+                             --verbose
+      - name: Verify download
+        working-directory: ${{ github.workspace }}/gibMacOS
+        run: |
+          DOWNLOAD_DIR=$(find "${{ github.workspace }}/gibMacOS/macOS Downloads" -type d -name "*${{ matrix.macos_version }}*" | head -n 1)
+          echo "Downloaded files in $DOWNLOAD_DIR:"
+          ls -la "$DOWNLOAD_DIR"
+          if [ -z "$DOWNLOAD_DIR" ] || [ ! -d "$DOWNLOAD_DIR" ]; then
+            echo "Error: Download directory not found"
+            exit 1
+          fi
+          PKG_COUNT=$(find "$DOWNLOAD_DIR" -name "*.pkg" | wc -l)
+          echo "Found $PKG_COUNT pkg files"
+          if [ "$PKG_COUNT" -lt 1 ]; then
+            echo "Error: No pkg files found in download directory"
+            exit 1
+          fi
+          echo "DOWNLOAD_DIR=$DOWNLOAD_DIR" >> $GITHUB_ENV
+      - name: Create Full Install Image
+        working-directory: ${{ github.workspace }}/gibMacOS
+        run: |
+          mkdir -p "${{ github.workspace }}/output"
+          cd Scripts
+          if [[ "${{ matrix.macos_version_number }}" == "11"* || "${{ matrix.macos_version_number }}" == "12"* || "${{ matrix.macos_version_number }}" == "13"* || "${{ matrix.macos_version_number }}" == "14"* || "${{ matrix.macos_version_number }}" == "15"* ]]; then
+            echo "Processing macOS >= 11 (Big Sur and newer)"
+            INSTALLER_PKG=$(find "$DOWNLOAD_DIR" -name "InstallAssistant*.pkg" | head -n 1)
+            if [ -z "$INSTALLER_PKG" ]; then
+              echo "Error: InstallAssistant.pkg not found"
+              exit 1
+            fi
+            echo "Found installer package: $INSTALLER_PKG"
+            TEMP_DIR="${{ github.workspace }}/temp_extract"
+            mkdir -p "$TEMP_DIR"
+            echo "Extracting package to $TEMP_DIR"
+            pkgutil --expand "$INSTALLER_PKG" "$TEMP_DIR"
+            PAYLOAD_DIR="${{ github.workspace }}/payload"
+            mkdir -p "$PAYLOAD_DIR"
+            echo "Extracting payload"
+            if [ -f "$TEMP_DIR/Payload" ]; then
+              cd "$PAYLOAD_DIR"
+              cat "$TEMP_DIR/Payload" | gunzip -dc | cpio -i
+            else
+              for payload in "$TEMP_DIR"/*.pkg/Payload; do
+                if [ -f "$payload" ]; then
+                  cd "$PAYLOAD_DIR"
+                  cat "$payload" | gunzip -dc | cpio -i
+                fi
+              done
+            fi
+            INSTALLER_APP=$(find "$PAYLOAD_DIR" -type d -name "Install*.app" | head -n 1)
+            if [ -z "$INSTALLER_APP" ]; then
+              echo "Error: macOS Installer app not found"
+              ls -la "$PAYLOAD_DIR"
+              exit 1
+            fi
+            echo "Found installer app: $INSTALLER_APP"
+            DMG_FILE="${{ github.workspace }}/output/${{ matrix.macos_name }}_full.dmg"
+            DMG_SIZE=16g
+            echo "Creating DMG file: $DMG_FILE"
+            hdiutil create -size $DMG_SIZE -layout SPUD -fs HFS+J -type SPARSE -volname "macOS_Install" -o "${{ github.workspace }}/temp_image"
+            MOUNT_POINT=$(hdiutil attach "${{ github.workspace }}/temp_image.sparseimage" -nobrowse -noverify -noautoopen | tail -n 1 | awk '{print $3}')
+            echo "Mounted DMG at: $MOUNT_POINT"
+            echo "Running createinstallmedia..."
+            sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "$MOUNT_POINT" --nointeraction
+            sleep 5
+            echo "Unmounting volume..."
+            hdiutil detach "/Volumes/Install macOS ${{ matrix.macos_name }}*" -force || hdiutil detach "$MOUNT_POINT" -force
+            echo "Converting sparse image to DMG..."
+            hdiutil convert "${{ github.workspace }}/temp_image.sparseimage" -format UDZO -o "$DMG_FILE"
+            rm -f "${{ github.workspace }}/temp_image.sparseimage"
+          else
+            echo "Processing macOS <= 10.15 (Catalina and older)"
+            python3 BuildmacOSInstallApp.py --catalog ${{ matrix.catalog }} \
+                                           --path "$DOWNLOAD_DIR" \
+                                           --output "${{ github.workspace }}/installer_app"
+            if [ ! -d "${{ github.workspace }}/installer_app" ]; then
+              echo "Error: Failed to build installer app"
+              exit 1
+            fi
+            INSTALLER_APP=$(find "${{ github.workspace }}/installer_app" -type d -name "Install*.app" | head -n 1)
+            if [ -z "$INSTALLER_APP" ]; then
+              echo "Error: macOS Installer app not found"
+              exit 1
+            fi
+            echo "Found installer app: $INSTALLER_APP"
+            DMG_FILE="${{ github.workspace }}/output/${{ matrix.macos_name }}_full.dmg"
+            DMG_SIZE=10g
+            echo "Creating DMG file: $DMG_FILE"
+            hdiutil create -size $DMG_SIZE -layout SPUD -fs HFS+J -type SPARSE -volname "macOS_Install" -o "${{ github.workspace }}/temp_image"
+            MOUNT_POINT=$(hdiutil attach "${{ github.workspace }}/temp_image.sparseimage" -nobrowse -noverify -noautoopen | tail -n 1 | awk '{print $3}')
+            echo "Mounted DMG at: $MOUNT_POINT"
+            echo "Running createinstallmedia..."
+            sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "$MOUNT_POINT" --applicationpath "$INSTALLER_APP" --nointeraction
+            sleep 5
+            echo "Unmounting volume..."
+            hdiutil detach "/Volumes/Install macOS ${{ matrix.macos_name }}*" -force || hdiutil detach "$MOUNT_POINT" -force
+            echo "Converting sparse image to DMG..."
+            hdiutil convert "${{ github.workspace }}/temp_image.sparseimage" -format UDZO -o "$DMG_FILE"
+            rm -f "${{ github.workspace }}/temp_image.sparseimage"
+          fi
+
       - name: List Output
         run: |
-          ls -lh ${{ github.workspace }}/output
+          ls -lah ${{ github.workspace }}/output/
+          if [ ! -f "${{ github.workspace }}/output/${{ matrix.macos_name }}_full.dmg" ]; then
+            echo "Error: Full DMG file not found!"
+            exit 1
+          fi
+          echo "Successfully created ${{ matrix.macos_name }}_full.dmg"
     
-              
       - name: Create Release Push to Repository
         working-directory: ${{ github.workspace }}
         run: |
           MACOS_NAME="${{ matrix.macos_name }}"
           MACOS_VERSION="${{ matrix.macos_version }}"
-          if [ ! -f "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg" ]; then
-            echo "Warning: Output file not found!"
+          DMG_FILE="${{ github.workspace }}/output/${MACOS_NAME}_full.dmg"
+          if [ ! -f "$DMG_FILE" ]; then
+            echo "Error: Output file not found at $DMG_FILE"
             exit 1
           fi
+          echo "Preparing to push $DMG_FILE to repository"
           TEMP_REPO_DIR="$GITHUB_WORKSPACE/temp_repo"
           mkdir -p "$TEMP_REPO_DIR"
           cd "$TEMP_REPO_DIR"
@@ -107,7 +205,8 @@ jobs:
             git rm -rf . || true
           fi
           mkdir -p "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME"
-          cp -f "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg" "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME/"
+          cp -f "$DMG_FILE" "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME/"
+          ls -lah "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME/"
           git add "$TEMP_REPO_DIR/macOS-images/$MACOS_NAME/"*
           git commit -m "Add macOS $MACOS_NAME ($MACOS_VERSION) installation image"
           git push -u origin ${{ matrix.macos_name }}-build:${{ matrix.macos_name }}-build
