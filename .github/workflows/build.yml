@@ -64,8 +64,9 @@ jobs:
         working-directory: ${{ github.workspace }}/gibMacOS
         run: |
           python3 gibMacOS.py --catalog ${{ matrix.catalog }} \
-                             --os ${{ matrix.macos_version_number }} \
-                             --version ${{ matrix.macos_version }} \
+                             --maxos ${{ matrix.macos_version_number }} \
+                             --version ${{ matrix.macos_version_number }} \
+                             -b ${{ matrix.macos_version }} \
                              --verbose
       - name: Verify download
         working-directory: ${{ github.workspace }}/gibMacOS
@@ -88,7 +89,6 @@ jobs:
         working-directory: ${{ github.workspace }}/gibMacOS
         run: |
           mkdir -p "${{ github.workspace }}/output"
-          # cd Scripts
           if [[ "${{ matrix.macos_version_number }}" == "11"* || "${{ matrix.macos_version_number }}" == "12"* || "${{ matrix.macos_version_number }}" == "13"* || "${{ matrix.macos_version_number }}" == "14"* || "${{ matrix.macos_version_number }}" == "15"* ]]; then
             echo "Processing macOS >= 11 (Big Sur and newer)"
             INSTALLER_PKG=$(find "$DOWNLOAD_DIR" -name "InstallAssistant*.pkg" | head -n 1)
