@@ -1,0 +1,292 @@
+version: 2.1
+
+orbs:
+  gh-release: gemfury/gh-release@1.1.0
+
+parameters:
+  macos-versions:
+    type: string
+    default: '{"sequoia":"15","sonoma":"14","ventura":"13","monterey":"12","big_sur":"11","catalina":"10.15","mojave":"10.14","high_sierra":"10.13","sierra":"10.12","el_capitan":"10.11","yosemite":"10.10","mavericks":"10.9","mountain_lion":"10.8","lion":"10.7","snow_leopard":"10.6","leopard":"10.5","tiger":"10.4"}'
+
+jobs:
+  build:
+    macos:
+      xcode: "15.4.0"
+    resource_class: macos.m1.large.gen1
+    parameters:
+      macos_version:
+        type: string
+        default: "15" # Sequoia
+      macos_name:
+        type: string
+        default: "sequoia"
+      catalog:
+        type: string
+        default: "publicrelease"
+    steps:
+      - checkout
+      - run:
+          name: Install Dependencies
+          command: |
+            brew install python3 coreutils
+            pip3 install pyyaml requests
+
+      - run:
+          name: Setup gibMacOS & Environment
+          command: |
+            chmod +x gibMacOS.command
+            mkdir -p output
+
+      - run:
+          name: Download macOS Installer
+          command: |
+            # 下载指定版本的macOS
+            ./gibMacOS.command --no-interactive --catalog << parameters.catalog >> --maxos << parameters.macos_version >> --latest --recovery
+
+      - run:
+          name: Prepare for Release
+          command: |
+            cd "$(find . -type d -name "macOS Downloads" | head -1)" || { echo "未找到macOS Downloads目录"; exit 1; }
+            
+            # 尝试找到下载的目录
+            DOWNLOAD_DIR=$(find . -type d -name "*" -mindepth 1 -maxdepth 1 | head -1)
+            if [ -z "$DOWNLOAD_DIR" ]; then
+              echo "错误：未找到下载目录!"
+              exit 1
+            fi
+            cd "$DOWNLOAD_DIR"
+            
+            # 使用传入的macOS名称
+            MACOS_NAME="<< parameters.macos_name >>"
+            MACOS_VERSION="<< parameters.macos_version >>"
+            echo "构建的macOS版本: $MACOS_NAME ($MACOS_VERSION)"
+            
+            # 创建DMG镜像文件
+            echo "正在创建DMG文件..."
+            
+            # 查找安装包文件
+            if [ -d "$(find . -name "*.pkg" -o -name "*.dmg" | head -1 | xargs dirname)" ]; then
+              cd "$(find . -name "*.pkg" -o -name "*.dmg" | head -1 | xargs dirname)"
+            fi
+            
+            # 尝试找到安装包文件
+            PKG_PATH=$(find . -name "*.pkg" | grep -i "InstallAssistant" | head -1)
+            
+            # 如果没找到InstallAssistant，尝试找RecoveryHDUpdate.pkg
+            if [ -z "$PKG_PATH" ]; then
+              PKG_PATH=$(find . -name "*.pkg" | grep -i "RecoveryHDUpdate" | head -1)
+            fi
+            
+            # 如果还是没找到，尝试找任何pkg文件
+            if [ -z "$PKG_PATH" ]; then
+              PKG_PATH=$(find . -name "*.pkg" | head -1)
+            fi
+            
+            # 如果找不到pkg文件，检查是否有dmg文件（对于较早的OS X版本）
+            if [ -z "$PKG_PATH" ]; then
+              DMG_PATH=$(find . -name "*.dmg" -o -name "*.app" | head -1)
+              if [ -n "$DMG_PATH" ]; then
+                echo "找到DMG或APP: $DMG_PATH"
+                # 直接复制DMG文件到输出目录
+                mkdir -p "$CIRCLE_WORKING_DIRECTORY/output"
+                cp "$DMG_PATH" "$CIRCLE_WORKING_DIRECTORY/output/${MACOS_NAME}_full.dmg"
+                
+                # 对于老版本，跳过后续处理步骤
+                echo "已直接复制安装镜像到输出目录"
+                exit 0
+              else
+                echo "错误：未找到任何安装包文件！"
+                exit 1
+              fi
+            fi
+            
+            echo "找到安装包: $PKG_PATH"
+            
+            # 创建DMG文件
+            hdiutil create -o "/tmp/${MACOS_NAME}_full.dmg" -size 16g -layout SPUD -fs HFS+J
+            hdiutil attach "/tmp/${MACOS_NAME}_full.dmg" -noverify -mountpoint /Volumes/install_build
+            
+            # 安装并提取
+            sudo installer -pkg "$PKG_PATH" -target /Volumes/install_build
+            
+            # 查找安装应用
+            INSTALLER_APP="$(find /Volumes/install_build -name "Install*.app" -maxdepth 1)"
+            if [ -z "$INSTALLER_APP" ]; then
+              echo "错误：未找到安装应用！"
+              hdiutil detach /Volumes/install_build
+              exit 1
+            fi
+            
+            echo "找到安装应用: $INSTALLER_APP"
+            
+            # 创建完整的可启动安装镜像
+            sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume /Volumes/install_build --nointeraction
+            
+            # 卸载并压缩DMG
+            sleep 5
+            FINAL_VOLUME=$(df -h | grep "/Volumes/Install" | awk '{print $9}')
+            hdiutil detach "$FINAL_VOLUME" -force
+            hdiutil convert "/tmp/${MACOS_NAME}_full.dmg" -format UDZO -o "$CIRCLE_WORKING_DIRECTORY/output/${MACOS_NAME}_full.dmg"
+            
+            # 切片DMG文件，每个不超过2GB
+            cd "$CIRCLE_WORKING_DIRECTORY/output"
+            split -b 1900m "${MACOS_NAME}_full.dmg" "${MACOS_NAME}_full.dmg.part_"
+            
+            # 显示文件大小信息
+            ls -lah
+
+      - store_artifacts:
+          path: output
+          destination: macos-images
+
+      - run:
+          name: Create Release Metadata
+          command: |
+            cd output
+            
+            # 获取macOS名称和版本
+            MACOS_NAME="<< parameters.macos_name >>"
+            MACOS_VERSION="<< parameters.macos_version >>"
+            
+            if [ ! -f "${MACOS_NAME}_full.dmg" ] && [ ! -f "${MACOS_NAME}_full.dmg.part_aa" ]; then
+              echo "警告：未找到输出文件！"
+              exit 1
+            fi
+      
+            # 计算总分片数
+            TOTAL_PARTS=$(find . -name "${MACOS_NAME}_full.dmg.part_*" | wc -l | tr -d ' ')
+            if [ "$TOTAL_PARTS" -eq 0 ]; then
+              # 如果没有分片，可能是单个DMG文件
+              if [ -f "${MACOS_NAME}_full.dmg" ]; then
+                echo "找到单个DMG文件，无需合并"
+                TOTAL_PARTS=1
+              fi
+            fi
+      
+            # 创建描述文件
+            echo "# macOS 安装镜像 - $MACOS_NAME ($MACOS_VERSION)" > release_notes.txt
+            echo "" >> release_notes.txt
+            echo "这是自动构建的macOS完整安装镜像。由于GitHub单文件大小限制，镜像被分割成多个部分。" >> release_notes.txt
+            echo "" >> release_notes.txt
+            echo "## 使用方法" >> release_notes.txt
+            echo "" >> release_notes.txt
+            
+            if [ "$TOTAL_PARTS" -gt 1 ]; then
+              echo "1. 下载所有 ${TOTAL_PARTS} 个分片文件" >> release_notes.txt
+              echo "2. 使用以下命令合并文件（在Linux/macOS上）：" >> release_notes.txt
+              echo "   \`\`\`" >> release_notes.txt
+              echo "   cat ${MACOS_NAME}_full.dmg.part_* > ${MACOS_NAME}_full.dmg" >> release_notes.txt
+              echo "   \`\`\`" >> release_notes.txt
+            else
+              echo "1. 下载完整的DMG文件" >> release_notes.txt
+            fi
+            
+            echo "3. 使用磁盘工具或其他工具将DMG写入USB驱动器" >> release_notes.txt
+            echo "" >> release_notes.txt
+            echo "## 构建信息" >> release_notes.txt
+            echo "" >> release_notes.txt
+            echo "- 构建日期: $(date '+%Y-%m-%d %H:%M:%S')" >> release_notes.txt
+            echo "- CircleCI构建: ${CIRCLE_BUILD_NUM}" >> release_notes.txt
+            echo "- 镜像名称: ${MACOS_NAME}" >> release_notes.txt
+            echo "- macOS版本: ${MACOS_VERSION}" >> release_notes.txt
+            echo "- 总分片数: ${TOTAL_PARTS}" >> release_notes.txt
+
+      - gh-release/create:
+          tag: "<< parameters.macos_name >>"
+          title: "macOS << parameters.macos_name >> (<<parameters.macos_version>>) 安装镜像"
+          description-file: output/release_notes.txt
+          files: output/*
+          draft: false
+          update-existing: true
+          github-token: ${GITHUB_TOKEN}
+          repo: oneclickvirt/macos
+
+workflows:
+  version: 2
+  build-and-release:
+    jobs:
+      - build:
+          name: build-sequoia
+          macos_version: "15"
+          macos_name: "sequoia"
+          context: github-token
+      - build:
+          name: build-sonoma
+          macos_version: "14"
+          macos_name: "sonoma"
+          context: github-token
+      - build:
+          name: build-ventura
+          macos_version: "13"
+          macos_name: "ventura"
+          context: github-token
+      - build:
+          name: build-monterey
+          macos_version: "12"
+          macos_name: "monterey"
+          context: github-token
+      - build:
+          name: build-big-sur
+          macos_version: "11"
+          macos_name: "big_sur"
+          context: github-token
+      - build:
+          name: build-catalina
+          macos_version: "10.15"
+          macos_name: "catalina"
+          context: github-token
+      - build:
+          name: build-mojave
+          macos_version: "10.14"
+          macos_name: "mojave"
+          context: github-token
+      - build:
+          name: build-high-sierra
+          macos_version: "10.13"
+          macos_name: "high_sierra"
+          context: github-token
+      - build:
+          name: build-sierra
+          macos_version: "10.12"
+          macos_name: "sierra"
+          context: github-token
+      - build:
+          name: build-el-capitan
+          macos_version: "10.11"
+          macos_name: "el_capitan"
+          context: github-token
+      - build:
+          name: build-yosemite
+          macos_version: "10.10"
+          macos_name: "yosemite"
+          context: github-token
+      - build:
+          name: build-mavericks
+          macos_version: "10.9"
+          macos_name: "mavericks"
+          context: github-token
+      - build:
+          name: build-mountain-lion
+          macos_version: "10.8"
+          macos_name: "mountain_lion"
+          context: github-token
+      - build:
+          name: build-lion
+          macos_version: "10.7"
+          macos_name: "lion"
+          context: github-token
+      - build:
+          name: build-snow-leopard
+          macos_version: "10.6"
+          macos_name: "snow_leopard"
+          context: github-token
+      - build:
+          name: build-leopard
+          macos_version: "10.5"
+          macos_name: "leopard"
+          context: github-token
+      - build:
+          name: build-tiger
+          macos_version: "10.4"
+          macos_name: "tiger"
+          context: github-token
