@@ -131,7 +131,20 @@ jobs:
             sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "$MOUNT_POINT" --nointeraction
             sleep 5
             echo "Unmounting volume..."
-            hdiutil detach "/Volumes/Install macOS ${{ matrix.macos_name }}*" -force || hdiutil detach "$MOUNT_POINT" -force
+            # Get actual mounted volume name after createinstallmedia
+            INSTALL_VOL=$(diskutil list | grep "Install macOS" | awk '{print $NF}')
+            if [ -n "$INSTALL_VOL" ]; then
+              echo "Found volume: $INSTALL_VOL"
+              diskutil unmount "/Volumes/$INSTALL_VOL" || true
+            else
+              echo "Trying to unmount all possible volume names..."
+              diskutil unmount "/Volumes/Install macOS ${{ matrix.macos_name }}" 2>/dev/null || true
+              diskutil unmount "$MOUNT_POINT" 2>/dev/null || true
+              for vol in $(ls -1 /Volumes/ | grep "Install macOS"); do
+                echo "Trying to unmount /Volumes/$vol"
+                diskutil unmount "/Volumes/$vol" 2>/dev/null || true
+              done
+            fi
             echo "Converting sparse image to DMG..."
             hdiutil convert "${{ github.workspace }}/temp_image.sparseimage" -format UDZO -o "$DMG_FILE"
             rm -f "${{ github.workspace }}/temp_image.sparseimage"
@@ -161,7 +174,28 @@ jobs:
             sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "$MOUNT_POINT" --applicationpath "$INSTALLER_APP" --nointeraction
             sleep 5
             echo "Unmounting volume..."
-            hdiutil detach "/Volumes/Install macOS ${{ matrix.macos_name }}*" -force || hdiutil detach "$MOUNT_POINT" -force
+            echo "Listing all volumes:"
+            ls -la /Volumes/
+            INSTALL_VOL=$(ls -1 /Volumes/ | grep -i "Install.*${matrix.macos_name}" || ls -1 /Volumes/ | grep -i "Install macOS" || echo "")
+            if [ -n "$INSTALL_VOL" ]; then
+              echo "Found volume: $INSTALL_VOL"
+              diskutil unmount "/Volumes/$INSTALL_VOL" || true
+            else
+              echo "Trying to unmount all possible volume names..."
+              diskutil unmount "/Volumes/Install macOS ${{ matrix.macos_name }}" 2>/dev/null || true
+              diskutil unmount "/Volumes/Install macOS High Sierra" 2>/dev/null || true
+              diskutil unmount "$MOUNT_POINT" 2>/dev/null || true
+              for vol in $(ls -1 /Volumes/ | grep "Install macOS"); do
+                echo "Trying to unmount /Volumes/$vol"
+                diskutil unmount "/Volumes/$vol" 2>/dev/null || true
+              done
+            fi
+            echo "Checking for any remaining volumes..."
+            REMAINING_VOLS=$(diskutil list | grep "Install macOS" || echo "")
+            if [ -n "$REMAINING_VOLS" ]; then
+              echo "Found remaining volumes, forcing detach..."
+              diskutil list | grep "Install macOS" | awk '{print $NF}' | xargs -I{} diskutil unmountDisk force /dev/{}
+            fi
             echo "Converting sparse image to DMG..."
             hdiutil convert "${{ github.workspace }}/temp_image.sparseimage" -format UDZO -o "$DMG_FILE"
             rm -f "${{ github.workspace }}/temp_image.sparseimage"
