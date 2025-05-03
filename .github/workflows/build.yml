@@ -59,10 +59,11 @@ jobs:
           
       - name: Install Dependencies
         run: |
-          brew install coreutils git
+          brew install coreutils
     
       - name: Clone and Setup gibMacOS
         run: |
+          brew install git
           git clone https://github.com/corpnewt/gibMacOS.git
           cd gibMacOS
           python -m venv .venv
