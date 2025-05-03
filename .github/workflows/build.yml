@@ -13,6 +13,7 @@ jobs:
         include:
           - macos_version: "15"
             macos_name: "sequoia"
+            catalog: "publicrelease"  # 明确指定使用公开发布版本
           # - macos_version: "14"
           #   macos_name: "sonoma"
           # - macos_version: "13"
@@ -73,11 +74,26 @@ jobs:
           chmod +x gibMacOS.command
           mkdir -p output
       
-      - name: Download macOS Recovery
+      - name: Download macOS Installation Package
         working-directory: ${{ github.workspace }}/gibMacOS
         run: |
           source .venv/bin/activate
-          ./gibMacOS.command --no-interactive --catalog ${{ matrix.catalog || 'publicrelease' }} --maxos ${{ matrix.macos_version }} --latest --recovery
+          ./gibMacOS.command --no-interactive --catalog ${{ matrix.catalog || 'publicrelease' }} --maxos ${{ matrix.macos_version }} --latest --full
+          
+      - name: List Download Content
+        working-directory: ${{ github.workspace }}/gibMacOS
+        run: |
+          source .venv/bin/activate
+          DOWNLOADS_DIR=$(find . -type d -name "macOS Downloads" | head -1)
+          if [ -z "$DOWNLOADS_DIR" ]; then
+            echo "Error: Could not find macOS Downloads directory"
+            exit 1
+          fi
+          echo "Contents of $DOWNLOADS_DIR:"
+          ls -la "$DOWNLOADS_DIR"
+          find "$DOWNLOADS_DIR" -type f -name "*.pkg" | sort
+          find "$DOWNLOADS_DIR" -type f -name "*.dmg" | sort
+          find "$DOWNLOADS_DIR" -type d -name "*.app" | sort
           
       - name: Process Downloads
         working-directory: ${{ github.workspace }}/gibMacOS
@@ -107,12 +123,10 @@ jobs:
           fi
           PKG_PATH=$(find . -name "*.pkg" | grep -i "InstallAssistant" | head -1)
           if [ -z "$PKG_PATH" ]; then
-            PKG_PATH=$(find . -name "*.pkg" | grep -i "RecoveryHDUpdate" | head -1)
-          fi
-          if [ -z "$PKG_PATH" ]; then
             PKG_PATH=$(find . -name "*.pkg" | head -1)
           fi
           if [ -z "$PKG_PATH" ]; then
+            # 如果没有找到pkg，寻找dmg或app
             DMG_PATH=$(find . -name "*.dmg" -o -name "*.app" | head -1)
             if [ -n "$DMG_PATH" ]; then
               echo "Found DMG or APP: $DMG_PATH"
@@ -143,9 +157,6 @@ jobs:
           cd "$DOWNLOAD_DIR"
           PKG_PATH=$(find . -name "*.pkg" | grep -i "InstallAssistant" | head -1)
           if [ -z "$PKG_PATH" ]; then
-            PKG_PATH=$(find . -name "*.pkg" | grep -i "RecoveryHDUpdate" | head -1)
-          fi
-          if [ -z "$PKG_PATH" ]; then
             PKG_PATH=$(find . -name "*.pkg" | head -1)
           fi
           if [ -z "$PKG_PATH" ]; then
@@ -157,18 +168,43 @@ jobs:
           hdiutil create -o "/tmp/${MACOS_NAME}_full.dmg" -size 16g -layout SPUD -fs HFS+J
           hdiutil attach "/tmp/${MACOS_NAME}_full.dmg" -noverify -mountpoint /Volumes/install_build
           sudo installer -pkg "$PKG_PATH" -target /Volumes/install_build
-          INSTALLER_APP="$(find /Volumes/install_build -name "Install*.app" -maxdepth 1)"
+          echo "Waiting for installer app to be extracted..."
+          TIMEOUT=300  # 5分钟超时
+          COUNT=0
+          INSTALLER_APP=""
+          while [ $COUNT -lt $TIMEOUT ]; do
+            INSTALLER_APP="$(find /Volumes/install_build -name "Install*.app" -maxdepth 1)"
+            if [ -n "$INSTALLER_APP" ]; then
+              break
+            fi
+            sleep 5
+            COUNT=$((COUNT + 5))
+            echo "Still waiting... ($COUNT seconds)"
+          done
           if [ -z "$INSTALLER_APP" ]; then
-            echo "Error: Installer application not found!"
-            hdiutil detach /Volumes/install_build
+            echo "Error: Installer application not found after $TIMEOUT seconds!"
+            echo "Contents of /Volumes/install_build:"
+            ls -la /Volumes/install_build
+            hdiutil detach /Volumes/install_build -force
             exit 1
           fi
           echo "Found installer app: $INSTALLER_APP"
+          if [ ! -f "$INSTALLER_APP/Contents/Resources/createinstallmedia" ]; then
+            echo "Error: createinstallmedia not found in $INSTALLER_APP!"
+            echo "Contents of $INSTALLER_APP/Contents/Resources:"
+            ls -la "$INSTALLER_APP/Contents/Resources"
+            hdiutil detach /Volumes/install_build -force
+            exit 1
+          fi
           sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume /Volumes/install_build --nointeraction
-          sleep 5
+          sleep 10
           FINAL_VOLUME=$(df -h | grep "/Volumes/Install" | awk '{print $9}')
           if [ -z "$FINAL_VOLUME" ]; then
             FINAL_VOLUME=$(df -h | grep "/Volumes/Install" | awk '{print $NF}')
+          fi
+          if [ -z "$FINAL_VOLUME" ]; then
+            echo "Warning: Cannot find final volume, using original mount point"
+            FINAL_VOLUME="/Volumes/install_build"
           fi
           hdiutil detach "$FINAL_VOLUME" -force
           hdiutil convert "/tmp/${MACOS_NAME}_full.dmg" -format UDZO -o "$GITHUB_WORKSPACE/output/${MACOS_NAME}_full.dmg"
