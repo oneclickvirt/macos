@@ -22,8 +22,7 @@ jobs:
       # 2. Install dependencies
       - name: Install dependencies
         run: |
-          brew install wget hdiutil
-          # ensure createinstallmedia is available via Install macOS app
+          brew install wget idutils
 
       # 3. Download macOS components using gibMacOS
       - name: Clone gibMacOS
