@@ -21,7 +21,6 @@ jobs:
       catalog:
         type: string
     environment:
-      # 这两个变量请到 CircleCI 项目设置 -> Environment Variables 中添加
       IP: ""
       PASSWORD: ""
     steps:
