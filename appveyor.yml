@@ -1,4 +1,4 @@
-image: macos
+image: macos-sonoma
 
 # 2. 定义环境变量矩阵：每一行对应一个并行作业，注入不同 macOS 参数
 environment:
