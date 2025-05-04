@@ -20,6 +20,10 @@ jobs:
         type: string
       catalog:
         type: string
+    environment:
+      # 这两个变量请到 CircleCI 项目设置 -> Environment Variables 中添加
+      IP: ""
+      PASSWORD: ""
     steps:
       - checkout
 
@@ -47,7 +51,7 @@ jobs:
           name: 查找下载目录
           command: |
             DOWNLOAD_DIR=$(find "$(pwd)/gibMacOS/macOS Downloads" -type d -name "*<< parameters.macos_version >>*" | head -n1)
-            if [ -z "$DOWNLOAD_DIR" ]; then echo "下载目录未找到"; exit 1; fi
+            if [ -z "$DOWNLOAD_DIR" ]; then echo "Error: 下载目录未找到"; exit 1; fi
             echo "export DOWNLOAD_DIR=\"$DOWNLOAD_DIR\"" >> $BASH_ENV
 
       - run:
@@ -55,30 +59,35 @@ jobs:
           command: |
             source $BASH_ENV
             PKG=$(find "$DOWNLOAD_DIR" -maxdepth 1 -name "InstallAssistant.pkg" | head -n1)
-            if [ -z "$PKG" ]; then echo "InstallAssistant.pkg 未找到"; exit 1; fi
+            if [ -z "$PKG" ]; then echo "Error: InstallAssistant.pkg 未找到"; exit 1; fi
             sudo installer -pkg "$PKG" -target /Applications
             APP="/Applications/Install macOS << parameters.macos_display_name >>.app"
-            if [ ! -d "$APP" ]; then echo "$APP 安装失败"; exit 1; fi
+            if [ ! -d "$APP" ]; then echo "Error: $APP 安装失败"; exit 1; fi
             echo "export INSTALLER_APP=\"$APP\"" >> $BASH_ENV
 
       - run:
-          name: 创建稀疏镜像（16G）
+          name: 根据下载内容动态创建稀疏镜像
           command: |
-            hdiutil create -size 16g -layout GPTSPUD -fs HFS+J -type SPARSE \
+            source $BASH_ENV
+            # 计算下载目录大小（KB），向上取整到 GB
+            DOWNLOAD_SIZE_KB=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
+            DOWNLOAD_GB=$(( (DOWNLOAD_SIZE_KB + 1048575) / 1048576 ))
+            IMAGE_SIZE="${DOWNLOAD_GB}g"
+            echo "Creating sparse image of size: $IMAGE_SIZE"
+            hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE \
               -volname "Install_<< parameters.macos_name >>" -o temp_install.sparseimage
 
       - run:
           name: 挂载镜像
           command: |
+            source $BASH_ENV
             OUTPUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
             EFI_LINE=$(echo "$OUTPUT" | grep -i "EFI ")
             INSTALL_LINE=$(echo "$OUTPUT" | grep -i "Install_<< parameters.macos_name >>")
             EFI_DEV=$(echo $EFI_LINE | awk '{print $1}')
-            EFI_MNT=$(echo $EFI_LINE | awk '{print $3}')
             INST_DEV=$(echo $INSTALL_LINE | awk '{print $1}')
             INST_MNT=$(echo $INSTALL_LINE | awk '{print $3}')
             echo "export EFI_DEV=$EFI_DEV" >> $BASH_ENV
-            echo "export EFI_MNT=$EFI_MNT" >> $BASH_ENV
             echo "export INST_DEV=$INST_DEV" >> $BASH_ENV
             echo "export INST_MNT=$INST_MNT" >> $BASH_ENV
 
@@ -128,11 +137,12 @@ jobs:
       - run:
           name: 通过 SCP 上传
           command: |
-            sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@$IP "mkdir -p /root/macos"
+            # IP 和 PASSWORD 来自项目环境变量
+            sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" "mkdir -p /root/macos"
             sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no \
               output/<< parameters.macos_name >>.iso.7z \
-              root@$IP:/root/macos/
-            sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@$IP "ls -lah /root/macos/"
+              root@"$IP":/root/macos/
+            sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" "ls -lah /root/macos/"
 
 workflows:
   build_iso_workflow:
