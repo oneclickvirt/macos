@@ -1,0 +1,308 @@
+name: MacOS ISO Builder For OpenCore New
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build_iso_new:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - macos_version: "20G1427"
+            macos_name: "big-sur"
+            macos_version_number: "11.7"
+            catalog: "publicrelease"
+          - macos_version: "21H1123"
+            macos_name: "monterey"
+            macos_version_number: "12"
+            catalog: "publicrelease"
+          - macos_version: "22H313"
+            macos_name: "ventura"
+            macos_version_number: "13"
+            catalog: "publicrelease"
+          - macos_version: "23H311"
+            macos_name: "sonoma"
+            macos_version_number: "14"
+            catalog: "publicrelease"
+          - macos_version: "24C101"
+            macos_name: "sequoia"
+            macos_version_number: "15"
+            catalog: "publicrelease"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          brew install wget sshpass p7zip cpio
+
+      - name: Clone gibMacOS
+        run: |
+          git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
+          chmod +x gibMacOS/gibMacOS.command
+
+      - name: Download macOS components
+        working-directory: gibMacOS
+        run: |
+          python3 gibMacOS.py --catalog "${{ matrix.catalog }}" \
+                             --version "${{ matrix.macos_version_number }}" \
+                             -b "${{ matrix.macos_version }}"
+
+      - name: Determine download directory
+        id: find_dir
+        run: |
+          DIR=$(find "${GITHUB_WORKSPACE}/gibMacOS/macOS Downloads" -type d -name "*${{ matrix.macos_version }}*" | head -n1)
+          if [ -z "$DIR" ]; then echo "Error: download dir not found"; exit 1; fi
+          echo "DOWNLOAD_DIR=$DIR" >> $GITHUB_ENV
+          echo "Download directory: $DIR"
+          ls -la "$DIR"
+
+      - name: Prepare installer app
+        run: |
+          MAJOR=$(echo "${{ matrix.macos_version_number }}" | cut -d. -f1)
+          
+          # Find the installer package
+          PKG=$(find "$DOWNLOAD_DIR" -name "InstallAssistant.pkg" | head -n1)
+          if [ -z "$PKG" ]; then
+            echo "Error: InstallAssistant.pkg not found"
+            ls -la "$DOWNLOAD_DIR"
+            exit 1
+          fi
+          
+          echo "Found installer package: $PKG"
+          
+          # Create a temporary directory for extraction
+          EXTRACT_DIR=$(mktemp -d)
+          echo "Extracting package to: $EXTRACT_DIR"
+          
+          # Extract the package using pkgutil
+          sudo pkgutil --expand "$PKG" "$EXTRACT_DIR/pkg_expanded"
+          
+          # Find all payload files and extract them
+          FOUND_APP=0
+          for PAYLOAD in $(find "$EXTRACT_DIR/pkg_expanded" -name "Payload"); do
+            echo "Processing payload: $PAYLOAD"
+            PAYLOAD_DIR=$(mktemp -d)
+            
+            # Try different extraction methods
+            (cd "$PAYLOAD_DIR" && cat "$PAYLOAD" | gunzip -dc | cpio -i 2>/dev/null) || \
+            (cd "$PAYLOAD_DIR" && 7z x "$PAYLOAD" -y >/dev/null 2>&1) || \
+            (cd "$PAYLOAD_DIR" && xar -xf "$PAYLOAD" 2>/dev/null) || \
+            echo "Warning: Could not extract $PAYLOAD"
+            
+            # Look for the Install macOS app
+            APP=$(find "$PAYLOAD_DIR" -type d -name "Install*.app" | head -n1)
+            if [ -n "$APP" ]; then
+              echo "Found installer app: $APP"
+              mkdir -p installer_app
+              cp -R "$APP" installer_app/
+              FOUND_APP=1
+              break
+            fi
+            
+            # Clean up
+            rm -rf "$PAYLOAD_DIR"
+          done
+          
+          # If app not found in payload, try extracting SharedSupport.dmg from the package
+          if [ $FOUND_APP -eq 0 ]; then
+            echo "Trying to extract SharedSupport.dmg..."
+            DMG=$(find "$EXTRACT_DIR" -name "SharedSupport.dmg" | head -n1)
+            
+            if [ -n "$DMG" ]; then
+              echo "Found SharedSupport.dmg: $DMG"
+              DMG_MOUNT=$(mktemp -d)
+              hdiutil attach "$DMG" -mountpoint "$DMG_MOUNT" -nobrowse
+              
+              APP=$(find "$DMG_MOUNT" -type d -name "Install*.app" | head -n1)
+              if [ -n "$APP" ]; then
+                echo "Found installer app in DMG: $APP"
+                mkdir -p installer_app
+                cp -R "$APP" installer_app/
+                FOUND_APP=1
+              fi
+              
+              hdiutil detach "$DMG_MOUNT" -force || true
+              rm -rf "$DMG_MOUNT"
+            fi
+          fi
+          
+          # If still no app found, try download using softwareupdate
+          if [ $FOUND_APP -eq 0 ]; then
+            echo "Attempting to download installer using softwareupdate..."
+            sudo softwareupdate --fetch-full-installer --full-installer-version "${{ matrix.macos_version_number }}"
+            
+            # Look for the downloaded installer in /Applications
+            APP=$(find "/Applications" -maxdepth 1 -type d -name "Install macOS*.app" | grep -i "${{ matrix.macos_name }}" | head -n1)
+            if [ -n "$APP" ]; then
+              echo "Found installer app using softwareupdate: $APP"
+              mkdir -p installer_app
+              sudo cp -R "$APP" installer_app/
+              sudo chown -R $(whoami) installer_app
+              FOUND_APP=1
+            fi
+          fi
+          
+          # Final check for installer app
+          if [ $FOUND_APP -eq 0 ]; then
+            echo "Error: Could not find or create a valid installer app"
+            exit 1
+          fi
+          
+          # Find the final installer app path
+          INSTALLER_APP=$(find "$(pwd)/installer_app" -type d -name "Install*.app" | head -n1)
+          if [ ! -d "$INSTALLER_APP" ]; then
+            echo "Error: Invalid installer application path: $INSTALLER_APP"
+            exit 1
+          fi
+          
+          echo "Using installer app: $INSTALLER_APP"
+          ls -la "$INSTALLER_APP"
+          ls -la "$INSTALLER_APP/Contents/Resources" || echo "Resources directory not found"
+          
+          # Verify createinstallmedia exists
+          if [ ! -f "$INSTALLER_APP/Contents/Resources/createinstallmedia" ]; then
+            echo "Error: createinstallmedia not found in $INSTALLER_APP"
+            exit 1
+          fi
+          
+          # Make sure createinstallmedia is executable
+          sudo chmod +x "$INSTALLER_APP/Contents/Resources/createinstallmedia"
+          
+          echo "INSTALLER_APP=$INSTALLER_APP" >> $GITHUB_ENV
+          
+          # Clean up
+          rm -rf "$EXTRACT_DIR"
+
+      - name: Create sparse image with dynamic size
+        run: |
+          DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
+          DOWNLOAD_SIZE_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 ))
+          IMAGE_SIZE="${DOWNLOAD_SIZE_GB}g"
+          echo "Creating sparse image with size: $IMAGE_SIZE"
+          hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE \
+            -volname "Install_${{ matrix.macos_name }}" \
+            -o temp_install.sparseimage
+
+      - name: Attach sparse image
+        id: attach
+        run: |
+          OUTPUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
+          echo "Attachment output: $OUTPUT"
+          
+          EFI_LINE=$(echo "$OUTPUT" | grep -i "EFI ")
+          INSTALL_LINE=$(echo "$OUTPUT" | grep -i "Install_${{ matrix.macos_name }}")
+          
+          EFI_DEV=$(echo "$EFI_LINE" | awk '{print $1}')
+          EFI_MNT=$(echo "$EFI_LINE" | awk '{print $3}')
+          INST_DEV=$(echo "$INSTALL_LINE" | awk '{print $1}')
+          INST_MNT=$(echo "$INSTALL_LINE" | awk '{print $3}')
+          
+          echo "EFI device: $EFI_DEV"
+          echo "EFI mount point: $EFI_MNT"
+          echo "Install device: $INST_DEV"
+          echo "Install mount point: $INST_MNT"
+          
+          echo "EFI_DEV=$EFI_DEV" >> $GITHUB_ENV
+          echo "EFI_MNT=$EFI_MNT" >> $GITHUB_ENV
+          echo "INST_DEV=$INST_DEV" >> $GITHUB_ENV
+          echo "INST_MNT=$INST_MNT" >> $GITHUB_ENV
+
+      - name: Run createinstallmedia
+        run: |
+          echo "Using installer at $INSTALLER_APP"
+          echo "Creating bootable installer at $INST_MNT"
+          
+          # Verify paths before running command
+          if [ ! -f "$INSTALLER_APP/Contents/Resources/createinstallmedia" ]; then
+            echo "Error: createinstallmedia not found"
+            exit 1
+          fi
+          
+          if [ ! -d "$INST_MNT" ]; then
+            echo "Error: Install volume not mounted at $INST_MNT"
+            exit 1
+          fi
+          
+          # Run createinstallmedia with sudo
+          sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
+            --volume "$INST_MNT" --nointeraction
+
+      - name: Inject OpenCore EFI
+        run: |
+          echo "Mounting EFI partition $EFI_DEV"
+          diskutil mount "$EFI_DEV" || true
+          
+          EFI_MNT_POINT=$(mount | grep "$EFI_DEV" | awk '{print $3}')
+          if [ -z "$EFI_MNT_POINT" ]; then
+            echo "Warning: Could not mount EFI partition. Trying alternative method..."
+            sudo mkdir -p /Volumes/EFI
+            sudo mount -t msdos "$EFI_DEV" /Volumes/EFI
+            EFI_MNT_POINT="/Volumes/EFI"
+          fi
+          
+          echo "Copying OpenCore EFI to $EFI_MNT_POINT"
+          if [ -d "EFI" ] && [ -d "$EFI_MNT_POINT" ]; then
+            sudo cp -R EFI/* "$EFI_MNT_POINT/"
+          else
+            echo "Warning: Either EFI source or destination not found"
+            ls -la
+            ls -la "$EFI_MNT_POINT" || echo "EFI mount point not accessible"
+          fi
+          
+          diskutil unmount "$EFI_MNT_POINT" || true
+
+      - name: Detach sparse image
+        run: |
+          for attempt in {1..5}; do
+            echo "Detach attempt $attempt..."
+            hdiutil detach "$EFI_DEV" -force || true
+            hdiutil detach "$INST_DEV" -force || true
+            
+            # Check if volumes are still mounted
+            if ! mount | grep -q "$EFI_DEV" && ! mount | grep -q "$INST_DEV"; then
+              echo "Volumes successfully detached"
+              break
+            fi
+            
+            echo "Volumes still mounted, waiting before retry..."
+            sleep 10
+          done
+
+      - name: Create hybrid ISO
+        run: |
+          mkdir -p output
+          sleep 30
+          echo "Converting sparseimage to ISO format..."
+          hdiutil convert temp_install.sparseimage -format UDTO -o output/${{ matrix.macos_name }}.cdr
+          sleep 20
+          mv output/${{ matrix.macos_name }}.cdr output/${{ matrix.macos_name }}.iso
+          echo "ISO created successfully"
+
+      - name: List output
+        run: |
+          ls -lah output/
+
+      - name: Compress ISO with 7z (max compression)
+        run: |
+          ISO_PATH=output/${{ matrix.macos_name }}.iso
+          COMPRESSED_PATH=${ISO_PATH}.7z
+          echo "Compressing $ISO_PATH to $COMPRESSED_PATH"
+          7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on -md=256m "$COMPRESSED_PATH" "$ISO_PATH"
+          echo "Compression complete."
+          ls -lh "$COMPRESSED_PATH"
+
+      - name: Verify ISO integrity after compression
+        run: |
+          7z t output/${{ matrix.macos_name }}.iso.7z
+
+      - name: Upload via SCP to /root/macos
+        run: |
+          ISO_7Z=output/${{ matrix.macos_name }}.iso.7z
+          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "mkdir -p /root/macos"
+          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no "$ISO_7Z" root@${{ secrets.IP }}:/root/macos/
+          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "ls -lah /root/macos/"
