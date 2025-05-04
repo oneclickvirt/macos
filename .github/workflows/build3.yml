@@ -82,13 +82,14 @@ jobs:
           diskutil unmount "$MOUNT_POINT" || true
           hdiutil detach "$DEVICE" || true
 
-      - name: Convert to ISO
+      - name: Create hybrid ISO with EFI
         run: |
           mkdir -p output
-          hdiutil convert temp_install.sparseimage -format UDTO -o output/${{ matrix.macos_name }}_full
-          mv output/${{ matrix.macos_name }}_full.cdr output/${{ matrix.macos_name }}_full.iso
+          # Create a hybrid ISO that includes HFS+ and Joliet, suitable for OpenCore
+          hdiutil makehybrid -iso -joliet -hfs -hfs-volume-name "Install_${{ matrix.macos_name }}" \
+            temp_install.sparseimage -o output/${{ matrix.macos_name }}_full.iso ([github.com](https://github.com/Clover-EFI-Bootloader/clover/blob/master/CloverPackage/makeiso?utm_source=chatgpt.com))
 
-      - name: Inject OpenCore EFI
+      - name: ISO
         run: |
           OUTPUT=$(hdiutil attach output/${{ matrix.macos_name }}_full.iso -noverify -nobrowse)
           EFI_MOUNT=$(echo "$OUTPUT" | grep -i "EFI " | awk '{print $3}')
