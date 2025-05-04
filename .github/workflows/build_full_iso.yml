@@ -61,8 +61,8 @@ jobs:
         working-directory: gibMacOS
         run: |
           python3 gibMacOS.py --catalog "${{ matrix.catalog }}" \
-                             --version "${{ matrix.macos_version }}" \
-                             -b "${{ matrix.macos_build }}"
+                             --version "${{ matrix.macos_version_number }}" \
+                             -b "${{ matrix.macos_version }}"
 
       - name: Determine download directory
         id: find_dir
