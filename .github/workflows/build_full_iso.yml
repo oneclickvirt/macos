@@ -73,7 +73,7 @@ jobs:
 
       - name: Prepare installer app
         run: |
-          if [[ "${{ matrix.macos_version }}" == 10.* ]]; then
+          if [[ "${{ matrix.macos_version_number }}" == 10.* ]]; then
             wget https://raw.githubusercontent.com/oneclickvirt/macos/main/BuildmacOSInstallApp.py -O BuildmacOSInstallApp.py
             chmod +x BuildmacOSInstallApp.py
             python3 BuildmacOSInstallApp.py "$DOWNLOAD_DIR" installer_app
