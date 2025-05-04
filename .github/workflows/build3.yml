@@ -101,9 +101,14 @@ jobs:
       - name: Create hybrid ISO
         run: |
           mkdir -p output
-          hdiutil makehybrid -iso -joliet -hfs \
-            temp_install.sparseimage \
-            -o output/${{ matrix.macos_name }}_full.iso
+          hdiutil makehybrid \
+          -iso \
+          -joliet \
+          -hfs \
+          -eltorito-boot EFI/BOOT/BOOTX64.EFI \
+          -eltorito-platform efi \
+          temp_install.sparseimage \
+          -o output/${{ matrix.macos_name }}_full.iso
 
       - name: List output
         run: |
