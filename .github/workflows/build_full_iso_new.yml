@@ -284,9 +284,7 @@ jobs:
             mount | grep Install
             exit 1
           fi
-          
-          # Run createinstallmedia with sudo and increased timeout
-          sudo timeout 7200 "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
+          sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
             --volume "$INST_MNT" --nointeraction || {
             echo "Warning: createinstallmedia may have timed out or had an issue."
             echo "Checking if the volume was modified anyway..."
