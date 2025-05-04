@@ -118,7 +118,8 @@ jobs:
 
       - name: Upload via SCP
         run: |
-          ISO=output/${{ matrix.macos_name }}_full.iso
+          # ISO=output/${{ matrix.macos_name }}_full.iso
+          ISO=output/${{ matrix.macos_name }}.iso
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "mkdir -p /root/macOS-images/${{ matrix.macos_name }}"
           sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no "$ISO" root@${{ secrets.IP }}:/root/macOS-images/${{ matrix.macos_name }}/
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "ls -lah /root/macOS-images/${{ matrix.macos_name }}/"
