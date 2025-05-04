@@ -109,7 +109,9 @@ jobs:
           # -eltorito-platform efi \
           # temp_install.sparseimage \
           # -o output/${{ matrix.macos_name }}_full.iso
+          sleep 30
           hdiutil convert temp_install.sparseimage -format UDTO -o output/${{ matrix.macos_name }}.cdr
+          sleep 20
           mv output/${{ matrix.macos_name }}.cdr output/${{ matrix.macos_name }}.iso
 
       - name: List output
