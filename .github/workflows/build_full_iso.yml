@@ -11,18 +11,18 @@ jobs:
       max-parallel: 2
       matrix:
         include:
-          - macos_version: "17G66"
-            macos_name: "high-sierra"
-            macos_version_number: "10.13"
-            catalog: "publicrelease"
-          - macos_version: "18F2059"
-            macos_name: "mojave"
-            macos_version_number: "10.14"
-            catalog: "publicrelease"
-          - macos_version: "19D2064"
-            macos_name: "catalina"
-            macos_version_number: "10.15"
-            catalog: "publicrelease"
+          # - macos_version: "17G66"
+          #   macos_name: "high-sierra"
+          #   macos_version_number: "10.13"
+          #   catalog: "publicrelease"
+          # - macos_version: "18F2059"
+          #   macos_name: "mojave"
+          #   macos_version_number: "10.14"
+          #   catalog: "publicrelease"
+          # - macos_version: "19D2064"
+          #   macos_name: "catalina"
+          #   macos_version_number: "10.15"
+          #   catalog: "publicrelease"
           - macos_version: "20G1427"
             macos_name: "big-sur"
             macos_version_number: "11.7"
@@ -73,31 +73,39 @@ jobs:
 
       - name: Prepare installer app
         run: |
-          if [[ "${{ matrix.macos_version_number }}" == 10.* ]]; then
+          MAJOR=${{ matrix.macos_version_number%%.*}}
+          if [ "$MAJOR" -lt 11 ]; then
+            # macOS 10.x：已自带 Install*.app
+            APP=$(find "$DOWNLOAD_DIR" -maxdepth 2 -type d -name "Install*.app" | head -n1)
+            if [ -z "$APP" ]; then
+              echo "Error: installer.app not found in $DOWNLOAD_DIR"
+              exit 1
+            fi
+            INSTALLER_APP="$APP"
+          else
             wget https://raw.githubusercontent.com/oneclickvirt/macos/main/BuildmacOSInstallApp.py -O BuildmacOSInstallApp.py
             chmod +x BuildmacOSInstallApp.py
             python3 BuildmacOSInstallApp.py "$DOWNLOAD_DIR" installer_app
             APP=$(find installer_app -maxdepth 2 -type d -name "Install*.app" | head -n1)
-            if [ -z "$APP" ]; then echo "Error: built installer.app not found"; exit 1; fi
+            if [ -z "$APP" ]; then
+              echo "Error: built installer.app not found in installer_app"
+              exit 1
+            fi
             INSTALLER_APP="$PWD/$APP"
-          else
-            APP=$(find "$DOWNLOAD_DIR" -maxdepth 2 -type d -name "Install*.app" | head -n1)
-            if [ -z "$APP" ]; then echo "Error: installer.app not found"; exit 1; fi
-            INSTALLER_APP="$APP"
           fi
+
           echo "INSTALLER_APP=$INSTALLER_APP" >> $GITHUB_ENV
-          
+
       - name: Create sparse image with dynamic size
         run: |
           DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
           DOWNLOAD_SIZE_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 ))
-          # IMAGE_SIZE=$((DOWNLOAD_SIZE_GB + 1))g
           IMAGE_SIZE="${DOWNLOAD_SIZE_GB}g"
           echo "Creating sparse image with size: $IMAGE_SIZE"
           hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE \
             -volname "Install_${{ matrix.macos_name }}" \
             -o temp_install.sparseimage
-              
+
       - name: Attach sparse image
         id: attach
         run: |
