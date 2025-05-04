@@ -97,7 +97,9 @@ jobs:
       - name: Run createinstallmedia
         run: |
           sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
-            --volume "$INST_MNT" --nointeraction --noerase
+            --volume "$INST_MNT" \
+            --nointeraction \
+            --downloadassets
 
       - name: Inject OpenCore EFI
         run: |
