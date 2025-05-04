@@ -15,79 +15,76 @@ jobs:
             catalog: "publicrelease"
 
     steps:
-      # 1. Checkout repo
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # 2. Install dependencies
       - name: Install dependencies
         run: |
-          brew install wget idutils
+          brew install wget
 
-      # 3. Download macOS components using gibMacOS
       - name: Clone gibMacOS
         run: |
           git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
           chmod +x gibMacOS/gibMacOS.command
+
       - name: Download macOS installer package
         working-directory: gibMacOS
         run: |
           python3 gibMacOS.py --catalog ${{ matrix.catalog }} \
                              --version ${{ matrix.macos_version }} \
                              -b ${{ matrix.macos_build }}
+
       - name: Determine download directory
-        id: download_dir
         run: |
-          DIR=$(find "$PWD/macOS Downloads" -type d -name "*${{ matrix.macos_build }}*" | head -n1)
+          DIR=$(find "${GITHUB_WORKSPACE}/gibMacOS/macOS Downloads" -type d -name "*${{ matrix.macos_build }}*" | head -n1)
           echo "DOWNLOAD_DIR=$DIR" >> $GITHUB_ENV
 
-      # 4. Create GPTSPUD sparse image
-      - name: Create sparse image for installer
+      - name: Create sparse image
         run: |
           hdiutil create -size 16g -layout GPTSPUD -fs HFS+J -type SPARSE -volname "Install_${{ matrix.macos_name }}" -o temp_install
+
       - name: Attach sparse image
-        id: attach_sparse
         run: |
           ATTACH_OUTPUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
-          echo "$ATTACH_OUTPUT"
-          MOUNT=$(echo "$ATTACH_OUTPUT" | tail -1 | awk '{print $3}')
-          echo "MOUNT_POINT=$MOUNT" >> $GITHUB_ENV
+          MOUNT_POINT=$(echo "$ATTACH_OUTPUT" | tail -1 | awk '{print $3}')
+          echo "MOUNT_POINT=$MOUNT_POINT" >> $GITHUB_ENV
 
-      # 5. Run createinstallmedia
       - name: Run createinstallmedia
         run: |
-          INSTALLER_APP=$(find "${{ env.DOWNLOAD_DIR }}" -maxdepth 2 -type d -name "Install*.app" | head -n1)
-          sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "${{ env.MOUNT_POINT }}" --nointeraction
+          echo "Using DOWNLOAD_DIR: $DOWNLOAD_DIR"
+          INSTALLER_APP=$(find "$DOWNLOAD_DIR" -maxdepth 2 -type d -name "Install*.app" | head -n1)
+          if [ -z "$INSTALLER_APP" ]; then
+            echo "Error: Installer app not found in $DOWNLOAD_DIR"
+            exit 1
+          fi
+          echo "Found Installer: $INSTALLER_APP"
+          sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "$MOUNT_POINT" --nointeraction
 
-      # 6. Unmount the installer volume
       - name: Unmount sparse image
         run: |
-          diskutil unmount "${{ env.MOUNT_POINT }}" || true
-          hdiutil detach $(echo "${{ env.MOUNT_POINT }}" | sed 's#/Volumes/.*##') || true
+          diskutil unmount "$MOUNT_POINT" || true
+          DEVICE=$(echo "$ATTACH_OUTPUT" | head -1 | awk '{print $1}')
+          hdiutil detach "$DEVICE" || true
 
-      # 7. Convert to ISO
-      - name: Convert sparse image to ISO
+      - name: Convert to ISO
         run: |
+          mkdir -p output
           hdiutil convert temp_install.sparseimage -format UDTO -o output/${{ matrix.macos_name }}_full
           mv output/${{ matrix.macos_name }}_full.cdr output/${{ matrix.macos_name }}_full.iso
 
-      # 8. Inject OpenCore EFI into ISO's EFI partition
-      - name: Mount ISO for EFI injection
+      - name: Inject OpenCore EFI
         run: |
-          hdiutil attach output/${{ matrix.macos_name }}_full.iso -noverify -nobrowse -mountpoint /Volumes/ISO
-      - name: Copy OpenCore.
-        run: |
-          # Assumes EFI folder in repo at ./EFI
-          sudo cp -R EFI /Volumes/EFI\ Boot/
-      - name: Unmount ISO
-        run: |
-          diskutil unmount /Volumes/EFI\ Boot/ || true
-          hdiutil detach /Volumes/ISO || true
+          # Mount ISO to inject EFI
+          MOUNT_ISO=$(hdiutil attach output/${{ matrix.macos_name }}_full.iso -noverify -nobrowse | grep "/Volumes" | awk '{print $3}')
+          echo "Mounting ISO at: $MOUNT_ISO"
+          sudo cp -R EFI "$MOUNT_ISO/EFI Boot/"
+          diskutil unmount "$MOUNT_ISO/EFI Boot" || true
+          hdiutil detach "$MOUNT_ISO" || true
 
-      # 9. List and upload
       - name: List output
         run: |
           ls -lah output/
+
       - name: Upload via SCP
         run: |
           ISO=output/${{ matrix.macos_name }}_full.iso
