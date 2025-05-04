@@ -4,7 +4,7 @@ executors:
   macos_executor:
     macos:
       xcode: "15.4.0"
-    resource_class: m2pro.medium
+    resource_class: macos.m1.medium.gen1
 
 jobs:
   build:
