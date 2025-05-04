@@ -67,7 +67,7 @@ jobs:
       - name: Determine download directory
         id: find_dir
         run: |
-          DIR=$(find "${GITHUB_WORKSPACE}/gibMacOS/macOS Downloads" -type d -name "*${{ matrix.macos_build }}*" | head -n1)
+          DIR=$(find "${GITHUB_WORKSPACE}/gibMacOS/macOS Downloads" -type d -name "*${{ matrix.macos_version }}*" | head -n1)
           if [ -z "$DIR" ]; then echo "Error: download dir not found"; exit 1; fi
           echo "DOWNLOAD_DIR=$DIR" >> $GITHUB_ENV
 
