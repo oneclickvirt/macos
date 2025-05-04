@@ -5,7 +5,10 @@ on:
 
 jobs:
   build_iso:
-    runs-on: macos-latest
+    permissions:
+      id-token: write
+      contents: read
+    runs-on: flyci-macos-large-latest-m1
     strategy:
       fail-fast: false
       max-parallel: 1
