@@ -48,8 +48,7 @@ build_script:
 
   # 定位下载目录
   - |
-    DOWNLOAD_DIR=$(find "$PWD/gibMacOS/macOS Downloads" \
-      -type d -name "*$MACOS_VERSION_CODE*" | head -n1)
+    DOWNLOAD_DIR=$(find "$PWD/gibMacOS/macOS Downloads" -type d -name "*$MACOS_VERSION_CODE*" | head -n1)
     if [ -z "$DOWNLOAD_DIR" ]; then
       echo "Error: download dir not found"; exit 1
     fi
@@ -68,8 +67,7 @@ build_script:
     DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
     DOWNLOAD_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 ))
     IMAGE_SIZE="${DOWNLOAD_GB}g"
-    hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE \
-      -volname "Install_$MACOS_NAME" -o temp_install.sparseimage
+    hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE -volname "Install_$MACOS_NAME" -o temp_install.sparseimage
 
   # 挂载镜像并记录设备/挂载点
   - |
@@ -80,10 +78,7 @@ build_script:
     INST_MNT=$(echo "$ATTACH_OUT" | grep -i "Install_$MACOS_NAME" | awk '{print $3}')
 
   # 运行 createinstallmedia
-  - sudo "$APP/Contents/Resources/createinstallmedia" \
-         --volume "$INST_MNT" \
-         --nointeraction \
-         --downloadassets
+  - sudo "$APP/Contents/Resources/createinstallmedia" --volume "$INST_MNT" --nointeraction --downloadassets
 
   # 注入 OpenCore EFI
   - |
@@ -104,9 +99,6 @@ build_script:
 
   # 压缩并上传
   - 7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on "output/$MACOS_NAME.iso.7z" "output/$MACOS_NAME.iso"
-  - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" \
-      "mkdir -p /root/macos && exit"
-  - sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no \
-      "output/$MACOS_NAME.iso.7z" root@"$IP":/root/macos/
-  - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" \
-      "ls -lah /root/macos/"
+  - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" "mkdir -p /root/macos && exit"
+  - sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no "output/$MACOS_NAME.iso.7z" root@"$IP":/root/macos/
+  - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" "ls -lah /root/macos/"
