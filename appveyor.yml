@@ -6,7 +6,7 @@ environment:
     - MACOS_VERSION_CODE: "20G1427"
       MACOS_NAME: "big‑sur"
       MACOS_DISPLAY_NAME: "Big Sur"
-      MACOS_VERSION_NUMBER: "11.7"
+      MACOS_VERSION_NUMBER: "11"
       CATALOG: "publicrelease"
     - MACOS_VERSION_CODE: "21H1123"
       MACOS_NAME: "monterey"
