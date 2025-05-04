@@ -41,14 +41,9 @@ jobs:
             catalog: "publicrelease"
 
     steps:
-      - name: Cleanup runner disk space
-        run: |
-          rm -rf ~/Library/Caches/Homebrew/*
-          brew cleanup --prune=all || true
-          rm -rf $RUNNER_WORKSPACE/_temp/* || true
-          rm -rf ~/Library/Caches/* || true
-          rm -rf ~/Library/Developer/Xcode/DerivedData/* || true
-          sudo rm -rf /private/var/folders/* || true
+      - name: Fix my build
+         uses: fly-ci/wingman-action@v1
+         if: failure()
 
       - name: Checkout code
         uses: actions/checkout@v3
