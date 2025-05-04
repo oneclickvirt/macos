@@ -89,7 +89,8 @@ jobs:
         run: |
           DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
           DOWNLOAD_SIZE_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 ))
-          IMAGE_SIZE=$((DOWNLOAD_SIZE_GB + 1))g
+          # IMAGE_SIZE=$((DOWNLOAD_SIZE_GB + 1))g
+          IMAGE_SIZE="${DOWNLOAD_SIZE_GB}g"
           echo "Creating sparse image with size: $IMAGE_SIZE"
           hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE \
             -volname "Install_${{ matrix.macos_name }}" \
