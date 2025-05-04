@@ -41,7 +41,6 @@ jobs:
           if [ -z "$DIR" ]; then echo "Error: download dir not found"; exit 1; fi
           echo "DOWNLOAD_DIR=$DIR" >> $GITHUB_ENV
 
-      # Build or locate installer.app
       - name: Prepare installer app
         run: |
           if [[ "${{ matrix.macos_version }}" == 10.* ]]; then
@@ -89,9 +88,8 @@ jobs:
         run: |
           echo "Mounting EFI partition $EFI_DEV"
           diskutil mount "$EFI_DEV"
-          # Determine mount point
           EFI_MNT_POINT=$(mount | grep "$EFI_DEV" | awk '{print $3}')
-          echo "EFI mounted at $EFI_MNT_POINT"
+          echo "Copying OpenCore EFI to $EFI_MNT_POINT"
           sudo cp -R EFI/* "$EFI_MNT_POINT/"
           diskutil unmount "$EFI_MNT_POINT" || true
 
@@ -114,9 +112,6 @@ jobs:
       - name: Upload via SCP
         run: |
           ISO=output/${{ matrix.macos_name }}_full.iso
-          sshpass -p "${{ secrets.PASSWORD }}" \
-            scp -o StrictHostKeyChecking=no "$ISO" \
-            root@${{ secrets.IP }}:/root/macOS-images/${{ matrix.macos_name }}/
-          sshpass -p "${{ secrets.PASSWORD }}" \
-            ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} \
-            "ls -lah /root/macOS-images/${{ matrix.macos_name }}/"
+          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "mkdir -p /root/macOS-images/${{ matrix.macos_name }}"
+          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no "$ISO" root@${{ secrets.IP }}:/root/macOS-images/${{ matrix.macos_name }}/
+          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "ls -lah /root/macOS-images/${{ matrix.macos_name }}/"
