@@ -29,7 +29,7 @@ environment:
       CATALOG: "publicrelease"
 # 3. 控制失败策略：false 表示即便某个作业失败，也会等待其他作业完成（可根据需要设 true）
 matrix:
-  fast_finish: true
+  fast_finish: false
 # 4. 构建脚本：按矩阵变量顺序执行完整的打包流程
 build_script:
   # 安装基础依赖
