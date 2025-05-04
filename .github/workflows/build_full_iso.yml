@@ -1,4 +1,4 @@
-name: macOS ISO Builder with OpenCore
+name: MacOS ISO Builder For OpenCore
 
 on:
   workflow_dispatch:
@@ -56,17 +56,11 @@ jobs:
             INSTALLER_APP="$APP"
           fi
           echo "INSTALLER_APP=$INSTALLER_APP" >> $GITHUB_ENV
-
-      # - name: Create sparse image
-      #   run: |
-      #     hdiutil create -size 8g -layout GPTSPUD -fs HFS+J -type SPARSE \
-      #       -volname "Install_${{ matrix.macos_name }}" \
-      #       -o temp_install.sparseimage
+          
       - name: Create sparse image with dynamic size
         run: |
           DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
-          # 转换为GB，向上取整
-          DOWNLOAD_SIZE_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 )) # 1GB = 1048576KB
+          DOWNLOAD_SIZE_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 ))
           IMAGE_SIZE=$((DOWNLOAD_SIZE_GB + 1))g
           echo "Creating sparse image with size: $IMAGE_SIZE"
           hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE \
@@ -120,10 +114,26 @@ jobs:
         run: |
           ls -lah output/
 
-      - name: Upload via SCP
+      - name: Install 7-Zip
         run: |
-          # ISO=output/${{ matrix.macos_name }}_full.iso
-          ISO=output/${{ matrix.macos_name }}.iso
-          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "mkdir -p /root/macOS-images/${{ matrix.macos_name }}"
-          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no "$ISO" root@${{ secrets.IP }}:/root/macOS-images/${{ matrix.macos_name }}/
-          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "ls -lah /root/macOS-images/${{ matrix.macos_name }}/"
+          brew install p7zip
+
+      - name: Compress ISO with 7z (max compression)
+        run: |
+          ISO_PATH=output/${{ matrix.macos_name }}.iso
+          COMPRESSED_PATH=${ISO_PATH}.7z
+          echo "Compressing $ISO_PATH to $COMPRESSED_PATH"
+          7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on -md=256m "$COMPRESSED_PATH" "$ISO_PATH"
+          echo "Compression complete."
+          ls -lh "$COMPRESSED_PATH"
+
+      - name: Verify ISO integrity after compression
+        run: |
+          7z t output/${{ matrix.macos_name }}.iso.7z
+
+      - name: Upload via SCP to /root/macos
+        run: |
+          ISO_7Z=output/${{ matrix.macos_name }}.iso.7z
+          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "mkdir -p /root/macos"
+          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no "$ISO_7Z" root@${{ secrets.IP }}:/root/macos/
+          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "ls -lah /root/macos/"
