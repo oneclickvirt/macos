@@ -41,24 +41,22 @@ jobs:
           if [ -z "$DIR" ]; then echo "Error: download dir not found"; exit 1; fi
           echo "DOWNLOAD_DIR=$DIR" >> $GITHUB_ENV
 
-      # For macOS <= 10.15: build installer.app from PKGs
-      - name: Build installer app
-        if: ${{ startsWith(matrix.macos_version, '10.') }}
+      # Build or locate installer.app
+      - name: Prepare installer app
         run: |
-          wget https://raw.githubusercontent.com/oneclickvirt/macos/main/BuildmacOSInstallApp.py -O BuildmacOSInstallApp.py
-          chmod +x BuildmacOSInstallApp.py
-          python3 BuildmacOSInstallApp.py "$DOWNLOAD_DIR" installer_app
-          APP=$(find installer_app -maxdepth 2 -type d -name "Install*.app" | head -n1)
-          if [ -z "$APP" ]; then echo "Error: built installer.app not found"; exit 1; fi
-          echo "INSTALLER_APP=$PWD/$APP" >> $GITHUB_ENV
-
-      # For macOS >= 11: locate installer.app directly
-      - name: Locate installer app
-        if: ${{ ! startsWith(matrix.macos_version, '10.') }}
-        run: |
-          APP=$(find "$DOWNLOAD_DIR" -maxdepth 2 -type d -name "Install*.app" | head -n1)
-          if [ -z "$APP" ]; then echo "Error: installer.app not found"; exit 1; fi
-          echo "INSTALLER_APP=$APP" >> $GITHUB_ENV
+          if [[ "${{ matrix.macos_version }}" == 10.* ]]; then
+            wget https://raw.githubusercontent.com/oneclickvirt/macos/main/BuildmacOSInstallApp.py -O BuildmacOSInstallApp.py
+            chmod +x BuildmacOSInstallApp.py
+            python3 BuildmacOSInstallApp.py "$DOWNLOAD_DIR" installer_app
+            APP=$(find installer_app -maxdepth 2 -type d -name "Install*.app" | head -n1)
+            if [ -z "$APP" ]; then echo "Error: built installer.app not found"; exit 1; fi
+            INSTALLER_APP="$PWD/$APP"
+          else
+            APP=$(find "$DOWNLOAD_DIR" -maxdepth 2 -type d -name "Install*.app" | head -n1)
+            if [ -z "$APP" ]; then echo "Error: installer.app not found"; exit 1; fi
+            INSTALLER_APP="$APP"
+          fi
+          echo "INSTALLER_APP=$INSTALLER_APP" >> $GITHUB_ENV
 
       - name: Create sparse image
         run: |
@@ -70,11 +68,15 @@ jobs:
         id: attach
         run: |
           OUTPUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
-          DEVICE=$(echo "$OUTPUT" | head -1 | awk '{print $1}')
-          EFI_MNT=$(echo "$OUTPUT" | head -1 | awk '{print $3}')
-          INST_MNT=$(echo "$OUTPUT" | tail -1 | awk '{print $3}')
-          echo "DEVICE=$DEVICE" >> $GITHUB_ENV
+          EFI_LINE=$(echo "$OUTPUT" | grep -i "EFI ")
+          INSTALL_LINE=$(echo "$OUTPUT" | grep -i "Install_${{ matrix.macos_name }}")
+          EFI_DEV=$(echo "$EFI_LINE" | awk '{print $1}')
+          EFI_MNT=$(echo "$EFI_LINE" | awk '{print $3}')
+          INST_DEV=$(echo "$INSTALL_LINE" | awk '{print $1}')
+          INST_MNT=$(echo "$INSTALL_LINE" | awk '{print $3}')
+          echo "EFI_DEV=$EFI_DEV" >> $GITHUB_ENV
           echo "EFI_MNT=$EFI_MNT" >> $GITHUB_ENV
+          echo "INST_DEV=$INST_DEV" >> $GITHUB_ENV
           echo "INST_MNT=$INST_MNT" >> $GITHUB_ENV
 
       - name: Run createinstallmedia
@@ -85,15 +87,14 @@ jobs:
 
       - name: Inject OpenCore EFI
         run: |
-          # Mount EFI partition if not mounted
-          diskutil mount "$DEVICE"
+          echo "Copying OpenCore EFI to $EFI_MNT"
           sudo cp -R EFI/* "$EFI_MNT/"
           diskutil unmount "$EFI_MNT" || true
 
       - name: Detach sparse image
         run: |
-          hdiutil detach "$DEVICE"
-          hdiutil detach "$(echo \"$OUTPUT\" | tail -1 | awk '{print $1}')"
+          hdiutil detach "$EFI_DEV" || true
+          hdiutil detach "$INST_DEV" || true
 
       - name: Create hybrid ISO
         run: |
@@ -103,7 +104,8 @@ jobs:
             -o output/${{ matrix.macos_name }}_full.iso
 
       - name: List output
-        run: ls -lah output/
+        run: |
+          ls -lah output/
 
       - name: Upload via SCP
         run: |
