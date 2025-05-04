@@ -40,230 +40,84 @@ jobs:
         run: |
           brew install wget sshpass p7zip cpio
 
-      - name: Download macOS Installer directly
+      - name: Download macOS Installer
         run: |
-          echo "Downloading macOS installer ${{ matrix.macos_name }} version ${{ matrix.macos_version_number }}"
-          # Try softwareupdate method first (most reliable)
-          sudo softwareupdate --fetch-full-installer --full-installer-version ${{ matrix.macos_version_number }}
-          
-          # Find the installer app
-          INSTALLER_APP=$(find /Applications -maxdepth 1 -name "Install macOS*.app" | grep -i "${{ matrix.macos_name }}" | head -n1)
-          
-          if [ -z "$INSTALLER_APP" ]; then
-            echo "Installer not found via softwareupdate, using fallback method"
-            # Fallback to mist tool (for older macOS versions)
+          echo "Downloading macOS installer ${{ matrix.macos_name }} ${{ matrix.macos_version_number }}"
+          sudo softwareupdate --fetch-full-installer --full-installer-version ${{ matrix.macos_version_number }} || true
+
+          # Fallback via mist if softwareupdate fails
+          if [ ! -d "/Applications/Install macOS*.app" ]; then
             git clone https://github.com/ninxsoft/mist.git
-            cd mist
-            swift build -c release
-            
-            # Create downloads directory
+            cd mist && swift build -c release
             mkdir -p ~/Downloads/macOS
-            
-            # Download installer using mist
             ./.build/release/mist download \
               --include-betas \
               --output-directory ~/Downloads/macOS \
               --catalog ${{ matrix.catalog }} \
               --version ${{ matrix.macos_version }} \
               --format pkg
-            
-            # Find downloaded PKG
             PKG=$(find ~/Downloads/macOS -name "*.pkg" | head -n1)
-            
-            if [ -n "$PKG" ]; then
-              echo "Found installer package: $PKG"
-              # Create Applications directory if not exists
-              sudo mkdir -p /Applications
-              
-              # Install the package
-              sudo installer -pkg "$PKG" -target /
-              
-              # Find the installed app
-              INSTALLER_APP=$(find /Applications -maxdepth 1 -name "Install macOS*.app" | grep -i "${{ matrix.macos_name }}" | head -n1)
-            fi
+            sudo installer -pkg "$PKG" -target /
           fi
-          
-          if [ -z "$INSTALLER_APP" ]; then
-            echo "Error: Could not find or download macOS installer"
-            exit 1
-          fi
-          
-          echo "Found installer: $INSTALLER_APP"
-          ls -la "$INSTALLER_APP"
-          
-          # Create directory and copy installer
-          mkdir -p installer_app
-          sudo cp -R "$INSTALLER_APP" installer_app/
-          sudo chown -R $(whoami) installer_app
-          
-          # Set environment variable
-          INSTALLER_APP=$(find "$(pwd)/installer_app" -type d -name "Install*.app" | head -n1)
+
+          # Locate the installer app
+          INSTALLER_APP=$(find /Applications -maxdepth 1 -name "Install macOS*.app" \
+            | grep -i "${{ matrix.macos_name }}" | head -n1)
           echo "INSTALLER_APP=$INSTALLER_APP" >> $GITHUB_ENV
-          
-          echo "Verifying installer app:"
           ls -la "$INSTALLER_APP"
-          ls -la "$INSTALLER_APP/Contents/Resources"
 
-      - name: Create sparse image with dynamic size
+      - name: Create temporary installer volume
         run: |
-          # Calculate size based on installer app
-          APP_SIZE=$(du -sk "$INSTALLER_APP" | awk '{print $1}')
-          # Add 2GB extra space to be safe
-          IMAGE_SIZE_MB=$(( (APP_SIZE / 1024) + 2048 ))
-          IMAGE_SIZE="${IMAGE_SIZE_MB}m"
-          echo "Creating sparse image with size: $IMAGE_SIZE"
-          
-          hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE \
-            -volname "Install_${{ matrix.macos_name }}" \
-            -o temp_install.sparseimage
+          hdiutil create -size 16384m \
+            -layout SPUD \
+            -fs HFS+J \
+            -volname "Install macOS ${{ matrix.macos_name | capitalize }}" \
+            /tmp/Install_${{ matrix.macos_name }}.dmg
 
-      - name: Attach sparse image
-        id: attach
+      - name: Attach installer volume
         run: |
-          # First attempt to attach
-          OUTPUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
-          echo "Attachment output: $OUTPUT"
-          
-          # Extract device names and mount points
-          EFI_DEV=$(echo "$OUTPUT" | grep -i "EFI " | awk '{print $1}')
-          EFI_MNT=$(echo "$OUTPUT" | grep -i "EFI " | awk '{print $3}')
-          INST_DEV=$(echo "$OUTPUT" | grep -i "Install_${{ matrix.macos_name }}" | awk '{print $1}')
-          INST_MNT=$(echo "$OUTPUT" | grep -i "Install_${{ matrix.macos_name }}" | awk '{print $3}')
-          
-          echo "EFI device: $EFI_DEV"
-          echo "EFI mount point: $EFI_MNT"
-          echo "Install device: $INST_DEV"
-          echo "Install mount point: $INST_MNT"
-          
-          # Set environment variables
-          echo "EFI_DEV=$EFI_DEV" >> $GITHUB_ENV
-          echo "EFI_MNT=$EFI_MNT" >> $GITHUB_ENV
-          echo "INST_DEV=$INST_DEV" >> $GITHUB_ENV
-          echo "INST_MNT=$INST_MNT" >> $GITHUB_ENV
+          hdiutil attach /tmp/Install_${{ matrix.macos_name }}.dmg \
+            -nobrowse -noverify -mountpoint /Volumes/InstallBuild
 
       - name: Run createinstallmedia
         run: |
-          echo "Using installer at $INSTALLER_APP"
-          echo "Creating bootable installer at $INST_MNT"
-          
-          # Verify the installer contains createinstallmedia
-          if [ ! -f "$INSTALLER_APP/Contents/Resources/createinstallmedia" ]; then
-            echo "Error: createinstallmedia not found"
-            ls -la "$INSTALLER_APP/Contents/Resources/"
-            exit 1
-          fi
-          
-          # Make sure createinstallmedia is executable
-          sudo chmod +x "$INSTALLER_APP/Contents/Resources/createinstallmedia"
-          
-          # Run createinstallmedia
-          sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "$INST_MNT" --nointeraction
-          
-          # Check if the command succeeded
-          if [ $? -ne 0 ]; then
-            echo "Error: createinstallmedia failed"
-            exit 1
-          fi
-          
-          # Find the new volume name (it changes after createinstallmedia)
-          NEW_VOLUME=$(find /Volumes -maxdepth 1 -name "Install macOS*" | head -n1)
-          echo "New installer volume: $NEW_VOLUME"
-          
-          # Update the environment variable for the install mount point
-          echo "INST_MNT=$NEW_VOLUME" >> $GITHUB_ENV
+          sudo "/Applications/Install macOS ${{ matrix.macos_name | capitalize }}.app/Contents/Resources/createinstallmedia" \
+            --volume /Volumes/InstallBuild --nointeraction
 
-      - name: Inject OpenCore EFI
+      - name: Eject installer volume
         run: |
-          echo "Mounting EFI partition $EFI_DEV"
-          diskutil mount "$EFI_DEV" || true
-          
-          EFI_MNT_POINT=$(mount | grep "$EFI_DEV" | awk '{print $3}')
-          if [ -z "$EFI_MNT_POINT" ]; then
-            echo "Warning: Could not mount EFI partition. Trying alternative method..."
-            sudo mkdir -p /Volumes/EFI
-            sudo mount -t msdos "$EFI_DEV" /Volumes/EFI
-            EFI_MNT_POINT="/Volumes/EFI"
-          fi
-          
-          echo "Copying OpenCore EFI to $EFI_MNT_POINT"
-          if [ -d "EFI" ] && [ -d "$EFI_MNT_POINT" ]; then
-            sudo cp -R EFI/* "$EFI_MNT_POINT/"
-          else
-            echo "Warning: Either EFI source or destination not found"
-            ls -la
-            ls -la "$EFI_MNT_POINT" || echo "EFI mount point not accessible"
-          fi
-          
-          diskutil unmount "$EFI_MNT_POINT" || true
+          hdiutil eject /Volumes/InstallBuild
 
-      - name: Detach sparse image
-        run: |
-          # Make sure we're not in any of the mount directories
-          cd "$GITHUB_WORKSPACE"
-          
-          # Try to gracefully unmount first
-          echo "Attempting to unmount volumes..."
-          diskutil unmount "$EFI_DEV" || true
-          diskutil unmount "$INST_DEV" || true
-          sleep 5
-          
-          # Force detach if needed
-          for attempt in {1..5}; do
-            echo "Detach attempt $attempt..."
-            
-            if [[ -n "$EFI_DEV" ]]; then
-              echo "Detaching EFI: $EFI_DEV"
-              hdiutil detach "$EFI_DEV" -force || true
-            fi
-            
-            if [[ -n "$INST_DEV" ]]; then
-              echo "Detaching Install: $INST_DEV"
-              hdiutil detach "$INST_DEV" -force || true
-            fi
-            
-            # Check if volumes are still mounted
-            if ! mount | grep -q "EFI" && ! mount | grep -q "Install"; then
-              echo "Volumes successfully detached"
-              break
-            fi
-            
-            echo "Volumes still mounted, waiting before retry..."
-            sleep 15
-          done
-
-      - name: Create hybrid ISO
+      - name: Convert DMG to ISO
         run: |
           mkdir -p output
-          
-          # Make sure we're not in any mounted volume directory
-          cd "$GITHUB_WORKSPACE"
-          
-          echo "Converting sparseimage to ISO format..."
-          hdiutil convert temp_install.sparseimage -format UDTO -o output/${{ matrix.macos_name }}.cdr
-          
-          echo "Converting CDR to ISO..."
+          # Produce a raw UDTO (CD‑master) image…
+          hdiutil convert /tmp/Install_${{ matrix.macos_name }}.dmg \
+            -format UDTO -o output/${{ matrix.macos_name }}
+          # …then rename to .iso
           mv output/${{ matrix.macos_name }}.cdr output/${{ matrix.macos_name }}.iso
-          
-          # Verify the ISO file
-          ISO_SIZE=$(stat -f %z "output/${{ matrix.macos_name }}.iso")
-          echo "ISO created successfully with size: $ISO_SIZE bytes"
 
-      - name: Compress ISO with 7z (max compression)
+      - name: (Optional) Make hybrid ISO
         run: |
-          ISO_PATH=output/${{ matrix.macos_name }}.iso
-          COMPRESSED_PATH=${ISO_PATH}.7z
-          echo "Compressing $ISO_PATH to $COMPRESSED_PATH"
-          7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on -md=256m "$COMPRESSED_PATH" "$ISO_PATH"
-          echo "Compression complete."
-          ls -lh "$COMPRESSED_PATH"
+          hdiutil makehybrid \
+            -iso -joliet \
+            -o output/${{ matrix.macos_name }}-hybrid.iso \
+            output/${{ matrix.macos_name }}.iso
+      - name: Compress ISO with 7z
+        run: |
+          ISO=output/${{ matrix.macos_name }}.iso
+          7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on -md=256m "$ISO.7z" "$ISO"
 
-      - name: Verify ISO integrity after compression
+      - name: Verify compressed archive
         run: |
           7z t output/${{ matrix.macos_name }}.iso.7z
 
-      - name: Upload via SCP to /root/macos
+      - name: Upload via SCP
         run: |
-          ISO_7Z=output/${{ matrix.macos_name }}.iso.7z
-          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "mkdir -p /root/macos"
-          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no "$ISO_7Z" root@${{ secrets.IP }}:/root/macos/
-          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "ls -lah /root/macos/"
+          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
+            root@${{ secrets.IP }} "mkdir -p /root/macos"
+          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no \
+            output/${{ matrix.macos_name }}.iso.7z \
+            root@${{ secrets.IP }}:/root/macos/
+          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
+            root@${{ secrets.IP }} "ls -lah /root/macos/"
