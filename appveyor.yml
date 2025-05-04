@@ -65,8 +65,9 @@ build_script:
   # 创建稀疏镜像
   - |
     DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
-    DOWNLOAD_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 ))
+    DOWNLOAD_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 + 2 ))
     IMAGE_SIZE="${DOWNLOAD_GB}g"
+    echo "Creating sparse image of size $IMAGE_SIZE …"
     hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE -volname "Install_$MACOS_NAME" -o temp_install.sparseimage
 
   # 挂载镜像并记录设备/挂载点
