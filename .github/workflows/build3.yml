@@ -1,0 +1,78 @@
+name: macOS Image Builder3 (ISO)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build3:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - macos_version: "17G66"
+            macos_name: "high-sierra"
+            macos_version_number: "10.13"
+            catalog: "publicrelease"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          brew install coreutils wget sshpass
+          pip install requests pyyaml
+
+      - name: Clone gibMacOS
+        run: |
+          git clone https://github.com/corpnewt/gibMacOS.git
+          cd gibMacOS
+          chmod +x gibMacOS.command
+
+      - name: Download macOS components
+        working-directory: ${{ github.workspace }}/gibMacOS
+        run: |
+          python3 gibMacOS.py --catalog ${{ matrix.catalog }} \
+                             --maxos ${{ matrix.macos_version_number }} \
+                             --version ${{ matrix.macos_version_number }} \
+                             -b ${{ matrix.macos_version }}
+
+      - name: Verify download
+        working-directory: ${{ github.workspace }}/gibMacOS
+        run: |
+          DOWNLOAD_DIR=$(find "${{ github.workspace }}/gibMacOS/macOS Downloads" -type d -name "*${{ matrix.macos_version }}*" | head -n 1)
+          echo "DOWNLOAD_DIR=$DOWNLOAD_DIR" >> $GITHUB_ENV
+
+      - name: Create Full Install ISO
+        working-directory: ${{ github.workspace }}/gibMacOS
+        run: |
+          mkdir -p "${{ github.workspace }}/output"
+          # Create sparse image and populate installer
+          hdiutil create -size 16g -layout SPUD -fs HFS+J -type SPARSE -volname "macOS_Install" -o temp_image
+          MOUNT_POINT=$(hdiutil attach temp_image.sparseimage -nobrowse -noverify -noautoopen | tail -n1 | awk '{print $3}')
+          INSTALLER_APP=$(find "${{ github.workspace }}/gibMacOS/macOS Downloads" -type d -name "Install*.app" | head -n1)
+          sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "$MOUNT_POINT" --nointeraction
+          # Unmount the volume
+          diskutil unmount "$MOUNT_POINT" || true
+          sleep 5
+          # Convert to ISO (UDRP .cdr) then rename
+          hdiutil convert temp_image.sparseimage -format UDTO -o output/${{ matrix.macos_name }}_full
+          mv output/${{ matrix.macos_name }}_full.cdr output/${{ matrix.macos_name }}.iso
+          rm -f temp_image.sparseimage
+
+      - name: List Output
+        run: |
+          ls -lah ${{ github.workspace }}/output/
+          test -f "${{ github.workspace }}/output/${{ matrix.macos_name }}.iso"
+
+      - name: Upload via SCP
+        working-directory: ${{ github.workspace }}
+        run: |
+          ISO_FILE="${{ github.workspace }}/output/${{ matrix.macos_name }}.iso"
+          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "mkdir -p /root/macOS-images/${{ matrix.macos_name }}"
+          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no "$ISO_FILE" root@${{ secrets.IP }}:/root/macOS-images/${{ matrix.macos_name }}/
+          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "ls -lah /root/macOS-images/${{ matrix.macos_name }}/ && echo 'Upload successful!'"
