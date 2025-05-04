@@ -1,78 +1,96 @@
-name: macOS Image Builder3 (ISO)
+name: macOS ISO Builder with OpenCore
 
 on:
   workflow_dispatch:
 
 jobs:
-  build3:
+  build_iso:
     runs-on: macos-latest
     strategy:
       matrix:
         include:
-          - macos_version: "17G66"
-            macos_name: "high-sierra"
-            macos_version_number: "10.13"
+          - macos_name: "high-sierra"
+            macos_version: "10.13"
+            macos_build: "17G66"
             catalog: "publicrelease"
+
     steps:
+      # 1. Checkout repo
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-
+      # 2. Install dependencies
       - name: Install dependencies
         run: |
-          brew install coreutils wget sshpass
-          pip install requests pyyaml
+          brew install wget hdiutil
+          # ensure createinstallmedia is available via Install macOS app
 
+      # 3. Download macOS components using gibMacOS
       - name: Clone gibMacOS
         run: |
-          git clone https://github.com/corpnewt/gibMacOS.git
-          cd gibMacOS
-          chmod +x gibMacOS.command
-
-      - name: Download macOS components
-        working-directory: ${{ github.workspace }}/gibMacOS
+          git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
+          chmod +x gibMacOS/gibMacOS.command
+      - name: Download macOS installer package
+        working-directory: gibMacOS
         run: |
           python3 gibMacOS.py --catalog ${{ matrix.catalog }} \
-                             --maxos ${{ matrix.macos_version_number }} \
-                             --version ${{ matrix.macos_version_number }} \
-                             -b ${{ matrix.macos_version }}
-
-      - name: Verify download
-        working-directory: ${{ github.workspace }}/gibMacOS
+                             --version ${{ matrix.macos_version }} \
+                             -b ${{ matrix.macos_build }}
+      - name: Determine download directory
+        id: download_dir
         run: |
-          DOWNLOAD_DIR=$(find "${{ github.workspace }}/gibMacOS/macOS Downloads" -type d -name "*${{ matrix.macos_version }}*" | head -n 1)
-          echo "DOWNLOAD_DIR=$DOWNLOAD_DIR" >> $GITHUB_ENV
+          DIR=$(find "$PWD/macOS Downloads" -type d -name "*${{ matrix.macos_build }}*" | head -n1)
+          echo "DOWNLOAD_DIR=$DIR" >> $GITHUB_ENV
 
-      - name: Create Full Install ISO
-        working-directory: ${{ github.workspace }}/gibMacOS
+      # 4. Create GPTSPUD sparse image
+      - name: Create sparse image for installer
         run: |
-          mkdir -p "${{ github.workspace }}/output"
-          # Create sparse image and populate installer
-          hdiutil create -size 16g -layout SPUD -fs HFS+J -type SPARSE -volname "macOS_Install" -o temp_image
-          MOUNT_POINT=$(hdiutil attach temp_image.sparseimage -nobrowse -noverify -noautoopen | tail -n1 | awk '{print $3}')
-          INSTALLER_APP=$(find "${{ github.workspace }}/gibMacOS/macOS Downloads" -type d -name "Install*.app" | head -n1)
-          sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "$MOUNT_POINT" --nointeraction
-          # Unmount the volume
-          diskutil unmount "$MOUNT_POINT" || true
-          sleep 5
-          # Convert to ISO (UDRP .cdr) then rename
-          hdiutil convert temp_image.sparseimage -format UDTO -o output/${{ matrix.macos_name }}_full
-          mv output/${{ matrix.macos_name }}_full.cdr output/${{ matrix.macos_name }}.iso
-          rm -f temp_image.sparseimage
-
-      - name: List Output
+          hdiutil create -size 16g -layout GPTSPUD -fs HFS+J -type SPARSE -volname "Install_${{ matrix.macos_name }}" -o temp_install
+      - name: Attach sparse image
+        id: attach_sparse
         run: |
-          ls -lah ${{ github.workspace }}/output/
-          test -f "${{ github.workspace }}/output/${{ matrix.macos_name }}.iso"
+          ATTACH_OUTPUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
+          echo "$ATTACH_OUTPUT"
+          MOUNT=$(echo "$ATTACH_OUTPUT" | tail -1 | awk '{print $3}')
+          echo "MOUNT_POINT=$MOUNT" >> $GITHUB_ENV
 
+      # 5. Run createinstallmedia
+      - name: Run createinstallmedia
+        run: |
+          INSTALLER_APP=$(find "${{ env.DOWNLOAD_DIR }}" -maxdepth 2 -type d -name "Install*.app" | head -n1)
+          sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "${{ env.MOUNT_POINT }}" --nointeraction
+
+      # 6. Unmount the installer volume
+      - name: Unmount sparse image
+        run: |
+          diskutil unmount "${{ env.MOUNT_POINT }}" || true
+          hdiutil detach $(echo "${{ env.MOUNT_POINT }}" | sed 's#/Volumes/.*##') || true
+
+      # 7. Convert to ISO
+      - name: Convert sparse image to ISO
+        run: |
+          hdiutil convert temp_install.sparseimage -format UDTO -o output/${{ matrix.macos_name }}_full
+          mv output/${{ matrix.macos_name }}_full.cdr output/${{ matrix.macos_name }}_full.iso
+
+      # 8. Inject OpenCore EFI into ISO's EFI partition
+      - name: Mount ISO for EFI injection
+        run: |
+          hdiutil attach output/${{ matrix.macos_name }}_full.iso -noverify -nobrowse -mountpoint /Volumes/ISO
+      - name: Copy OpenCore.
+        run: |
+          # Assumes EFI folder in repo at ./EFI
+          sudo cp -R EFI /Volumes/EFI\ Boot/
+      - name: Unmount ISO
+        run: |
+          diskutil unmount /Volumes/EFI\ Boot/ || true
+          hdiutil detach /Volumes/ISO || true
+
+      # 9. List and upload
+      - name: List output
+        run: |
+          ls -lah output/
       - name: Upload via SCP
-        working-directory: ${{ github.workspace }}
         run: |
-          ISO_FILE="${{ github.workspace }}/output/${{ matrix.macos_name }}.iso"
-          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "mkdir -p /root/macOS-images/${{ matrix.macos_name }}"
-          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no "$ISO_FILE" root@${{ secrets.IP }}:/root/macOS-images/${{ matrix.macos_name }}/
-          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "ls -lah /root/macOS-images/${{ matrix.macos_name }}/ && echo 'Upload successful!'"
+          ISO=output/${{ matrix.macos_name }}_full.iso
+          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no "$ISO" root@${{ secrets.IP }}:/root/macOS-images/${{ matrix.macos_name }}/
+          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "ls -lah /root/macOS-images/${{ matrix.macos_name }}/"
