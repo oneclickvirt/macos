@@ -59,7 +59,7 @@ jobs:
 
       - name: Create sparse image
         run: |
-          hdiutil create -size 16g -layout GPTSPUD -fs HFS+J -type SPARSE \
+          hdiutil create -size 14g -layout GPTSPUD -fs HFS+J -type SPARSE \
             -volname "Install_${{ matrix.macos_name }}" \
             -o temp_install.sparseimage
 
