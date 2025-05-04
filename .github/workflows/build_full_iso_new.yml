@@ -12,7 +12,7 @@ jobs:
       matrix:
         include:
           - macos_version: "20G1427"
-            macos_name: "big-sur"
+            macos_name: "big‑sur"
             macos_display_name: "Big Sur"
             macos_version_number: "11.7"
             catalog: "publicrelease"
@@ -43,68 +43,92 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install wget sshpass p7zip cpio
+          brew update
+          brew install wget sshpass
 
-      - name: Download macOS Installer
+      - name: Clone gibMacOS
         run: |
-          echo "Downloading macOS installer ${{ matrix.macos_display_name }} ${{ matrix.macos_version_number }}"
-          sudo softwareupdate --fetch-full-installer --full-installer-version ${{ matrix.macos_version_number }} || true
+          git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
+          chmod +x gibMacOS/gibMacOS.command
 
-      - name: Locate Installer App
+      - name: Download macOS components
+        working-directory: gibMacOS
         run: |
-          EXPORT="$(
-            find /Applications -maxdepth 1 -name "Install macOS*.app" \
-              | grep "${{ matrix.macos_display_name }}" \
-              | head -n1
-          )"
-          echo "INSTALLER_APP=$EXPORT" >> $GITHUB_ENV
+          python3 gibMacOS.py --catalog "${{ matrix.catalog }}" \
+                             --version "${{ matrix.macos_version_number }}" \
+                             -b "${{ matrix.macos_version }}"
 
-      - name: Create temporary installer volume
+      - name: Determine download directory
+        id: find_dir
         run: |
-          hdiutil create -size 16384m \
-            -layout SPUD \
-            -fs HFS+J \
-            -volname "Install macOS ${{ matrix.macos_display_name }}" \
-            /tmp/Install_${{ matrix.macos_name }}.dmg
+          DIR=$(find "${GITHUB_WORKSPACE}/gibMacOS/macOS Downloads" \
+            -type d -name "*${{ matrix.macos_version }}*" | head -n1)
+          if [ -z "$DIR" ]; then echo "Error: download dir not found"; exit 1; fi
+          echo "DOWNLOAD_DIR=$DIR" >> $GITHUB_ENV
 
-      - name: Attach installer volume
+      - name: Prepare installer app for macOS >= 11
         run: |
-          hdiutil attach /tmp/Install_${{ matrix.macos_name }}.dmg \
-            -nobrowse -noverify -mountpoint /Volumes/InstallBuild
+          PKG=$(find "$DOWNLOAD_DIR" -maxdepth 1 -name "InstallAssistant.pkg" | head -n1)
+          if [ -z "$PKG" ]; then echo "Error: InstallAssistant.pkg not found"; exit 1; fi
+          sudo installer -pkg "$PKG" -target /Applications
+          APP="/Applications/Install macOS ${{ matrix.macos_display_name }}.app"
+          if [ ! -d "$APP" ]; then echo "Error: $APP not found after pkg install"; exit 1; fi
+          echo "INSTALLER_APP=$APP" >> $GITHUB_ENV
+
+      - name: Create sparse image with dynamic size
+        run: |
+          DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
+          DOWNLOAD_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 ))
+          IMAGE_SIZE="${DOWNLOAD_GB}g"
+          hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE \
+            -volname "Install_${{ matrix.macos_name }}" -o temp_install.sparseimage
+
+      - name: Attach sparse image
+        id: attach
+        run: |
+          OUTPUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
+          EFI_LINE=$(echo "$OUTPUT" | grep -i "EFI ")
+          INSTALL_LINE=$(echo "$OUTPUT" | grep -i "Install_${{ matrix.macos_name }}")
+          echo "EFI_DEV=$(echo $EFI_LINE | awk '{print $1}')" >> $GITHUB_ENV
+          echo "EFI_MNT=$(echo $EFI_LINE | awk '{print $3}')" >> $GITHUB_ENV
+          echo "INST_DEV=$(echo $INSTALL_LINE | awk '{print $1}')" >> $GITHUB_ENV
+          echo "INST_MNT=$(echo $INSTALL_LINE | awk '{print $3}')" >> $GITHUB_ENV
 
       - name: Run createinstallmedia
         run: |
-          sudo "/Applications/Install macOS ${{ matrix.macos_display_name }}.app/Contents/Resources/createinstallmedia" \
-            --volume /Volumes/InstallBuild --nointeraction
+          sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
+            --volume "$INST_MNT" --nointeraction --noerase
 
-      - name: Eject installer volume
+      - name: Inject OpenCore EFI
         run: |
-          hdiutil eject /Volumes/InstallBuild
+          diskutil mount "$EFI_DEV"
+          EFI_MNT_PT=$(mount | grep "$EFI_DEV" | awk '{print $3}')
+          sudo cp -R EFI/* "$EFI_MNT_PT/"
+          diskutil unmount "$EFI_MNT_PT" || true
 
-      - name: Convert DMG to ISO
+      - name: Detach sparse image
+        run: |
+          hdiutil detach "$EFI_DEV" || true
+          hdiutil detach "$INST_DEV" || true
+
+      - name: Create hybrid ISO
         run: |
           mkdir -p output
-          hdiutil convert /tmp/Install_${{ matrix.macos_name }}.dmg \
-            -format UDTO -o output/${{ matrix.macos_name }}
+          hdiutil convert temp_install.sparseimage -format UDTO -o output/${{ matrix.macos_name }}.cdr
           mv output/${{ matrix.macos_name }}.cdr output/${{ matrix.macos_name }}.iso
 
-      - name: (Optional) Make hybrid ISO
-        run: |
-          hdiutil makehybrid \
-            -iso -joliet \
-            -o output/${{ matrix.macos_name }}-hybrid.iso \
-            output/${{ matrix.macos_name }}.iso
+      - name: Install 7-Zip
+        run: brew install p7zip
 
-      - name: Compress ISO with 7z
+      - name: Compress ISO with 7z (max compression)
         run: |
           ISO=output/${{ matrix.macos_name }}.iso
-          7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on -md=256m "$ISO.7z" "$ISO"
+          7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on -md=256m "${ISO}.7z" "$ISO"
 
       - name: Verify compressed archive
-        run: |
-          7z t output/${{ matrix.macos_name }}.iso.7z
+        run: 7z t output/${{ matrix.macos_name }}.iso.7z
 
-      - name: Upload via SCP
+      - name: Upload via SCP to /root/macos
         run: |
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no \
             root@${{ secrets.IP }} "mkdir -p /root/macos"
