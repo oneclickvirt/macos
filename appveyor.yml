@@ -1,0 +1,121 @@
+image: macos
+parallel: true
+environment:
+  matrix:
+    - macos_version_code: "20G1427"
+      macos_name: "big‑sur"
+      macos_display_name: "Big Sur"
+      macos_version_number: "11.7"
+      catalog: "publicrelease"
+    - macos_version_code: "21H1123"
+      macos_name: "monterey"
+      macos_display_name: "Monterey"
+      macos_version_number: "12"
+      catalog: "publicrelease"
+    - macos_version_code: "22H313"
+      macos_name: "ventura"
+      macos_display_name: "Ventura"
+      macos_version_number: "13"
+      catalog: "publicrelease"
+    - macos_version_code: "23H311"
+      macos_name: "sonoma"
+      macos_display_name: "Sonoma"
+      macos_version_number: "14"
+      catalog: "publicrelease"
+    - macos_version_code: "24C101"
+      macos_name: "sequoia"
+      macos_display_name: "Sequoia"
+      macos_version_number: "15"
+      catalog: "publicrelease"
+
+
+build_script:
+  # 1. 安装依赖
+  - brew update
+  - brew install wget sshpass p7zip
+
+  # 2. 克隆 gibMacOS 并下载 macOS 构件
+  - git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
+  - chmod +x gibMacOS/gibMacOS.command
+  - cd gibMacOS
+  - python3 gibMacOS.py --catalog "%catalog%" --version "%macos_version_number%" -b "%macos_version_code%"
+  - cd ..
+
+  # 3. 找到下载目录并设环境变量
+  - |
+    DOWNLOAD_DIR=$(find "$PWD/gibMacOS/macOS Downloads" -type d -name "*%macos_version_code%*" | head -n1)
+    if [ -z "$DOWNLOAD_DIR" ]; then
+      echo "Error: download dir not found"
+      exit 1
+    fi
+    echo "DOWNLOAD_DIR=$DOWNLOAD_DIR" >> ~/.profile
+  - source ~/.profile
+
+  # 4. 安装 InstallAssistant 到 /Applications
+  - |
+    PKG=$(find "$DOWNLOAD_DIR" -maxdepth 1 -name "InstallAssistant.pkg" | head -n1)
+    sudo installer -pkg "$PKG" -target /Applications
+    APP="/Applications/Install macOS %macos_display_name%.app"
+    if [ ! -d "$APP" ]; then
+      echo "Error: $APP not found"
+      exit 1
+    fi
+    echo "INSTALLER_APP=$APP" >> ~/.profile
+  - source ~/.profile
+
+  # 5. 创建可扩展稀疏镜像
+  - |
+    DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
+    DOWNLOAD_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 ))
+    IMAGE_SIZE="${DOWNLOAD_GB}g"
+    hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE \
+      -volname "Install_%macos_name%" -o temp_install.sparseimage
+
+  # 6. 挂载稀疏镜像并记录设备节点
+  - |
+    ATTACH_OUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
+    EFI_DEV=$(echo "$ATTACH_OUT" | grep -i "EFI " | awk '{print $1}')
+    EFI_MNT=$(echo "$ATTACH_OUT" | grep -i "EFI " | awk '{print $3}')
+    INST_DEV=$(echo "$ATTACH_OUT" | grep -i "Install_%macos_name%" | awk '{print $1}')
+    INST_MNT=$(echo "$ATTACH_OUT" | grep -i "Install_%macos_name%" | awk '{print $3}')
+
+  # 7. 运行 createinstallmedia
+  - |
+    sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
+      --volume "$INST_MNT" \
+      --nointeraction \
+      --downloadassets
+
+  # 8. 注入 OpenCore EFI
+  - |
+    diskutil mount "$EFI_DEV"
+    EFI_PT=$(mount | grep "$EFI_DEV" | awk '{print $3}')
+    sudo cp -R EFI/* "$EFI_PT/"
+    diskutil unmount "$EFI_DEV" || true
+
+  # 9. 卸载镜像
+  - |
+    hdiutil detach "$EFI_DEV" || true
+    hdiutil detach "$INST_DEV" || true
+
+  # 10. 转换并生成混合 ISO
+  - |
+    mkdir -p output
+    hdiutil convert temp_install.sparseimage -format UDTO -o output/%macos_name%.cdr
+    mv output/%macos_name%.cdr output/%macos_name%.iso
+
+  # 11. 压缩 ISO
+  - 7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on "output/%macos_name%.iso.7z" "output/%macos_name%.iso"
+
+  # 12. 验证并上传
+  - 7z t "output/%macos_name%.iso.7z"
+  - |
+    sshpass -p "%PASSWORD%" ssh -o StrictHostKeyChecking=no root@%IP% "mkdir -p /root/macos"
+    sshpass -p "%PASSWORD%" scp -o StrictHostKeyChecking=no \
+      output/%macos_name%.iso.7z \
+      root@%IP%:/root/macos/
+    sshpass -p "%PASSWORD%" ssh -o StrictHostKeyChecking=no root@%IP% "ls -lah /root/macos/"
+
+secure:
+  - IP: ENV_VAR       # 目标服务器 IP
+  - PASSWORD: ENV_VAR # SSH 密码
