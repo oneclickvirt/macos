@@ -87,8 +87,7 @@ jobs:
           mkdir -p output
           # Create a hybrid ISO that includes HFS+ and Joliet, suitable for OpenCore
           hdiutil makehybrid -iso -joliet -hfs -hfs-volume-name "Install_${{ matrix.macos_name }}" \
-            temp_install.sparseimage -o output/${{ matrix.macos_name }}_full.iso ([github.com](https://github.com/Clover-EFI-Bootloader/clover/blob/master/CloverPackage/makeiso?utm_source=chatgpt.com))
-
+            temp_install.sparseimage -o output/${{ matrix.macos_name }}_full.iso
       - name: ISO
         run: |
           OUTPUT=$(hdiutil attach output/${{ matrix.macos_name }}_full.iso -noverify -nobrowse)
