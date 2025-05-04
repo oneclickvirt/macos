@@ -87,9 +87,13 @@ jobs:
 
       - name: Inject OpenCore EFI
         run: |
-          echo "Copying OpenCore EFI to $EFI_MNT"
-          sudo cp -R EFI/* "$EFI_MNT/"
-          diskutil unmount "$EFI_MNT" || true
+          echo "Mounting EFI partition $EFI_DEV"
+          diskutil mount "$EFI_DEV"
+          # Determine mount point
+          EFI_MNT_POINT=$(mount | grep "$EFI_DEV" | awk '{print $3}')
+          echo "EFI mounted at $EFI_MNT_POINT"
+          sudo cp -R EFI/* "$EFI_MNT_POINT/"
+          diskutil unmount "$EFI_MNT_POINT" || true
 
       - name: Detach sparse image
         run: |
