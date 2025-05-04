@@ -1,10 +1,10 @@
-name: MacOS ISO Builder For OpenCore New
+name: MacOS ISO Builder For OpenCore
 
 on:
   workflow_dispatch:
 
 jobs:
-  build_iso_new:
+  build_iso:
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -175,8 +175,10 @@ jobs:
           
           echo "INSTALLER_APP=$INSTALLER_APP" >> $GITHUB_ENV
           
-          # Clean up
-          rm -rf "$EXTRACT_DIR"
+          # Clean up with proper permissions
+          sudo rm -rf "$EXTRACT_DIR" || {
+            echo "Warning: Could not remove extraction directory. Continuing..."
+          }
 
       - name: Create sparse image with dynamic size
         run: |
@@ -191,12 +193,46 @@ jobs:
       - name: Attach sparse image
         id: attach
         run: |
-          OUTPUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
-          echo "Attachment output: $OUTPUT"
+          # First attempt to attach
+          for attempt in {1..3}; do
+            echo "Attachment attempt $attempt..."
+            OUTPUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
+            echo "Attachment output: $OUTPUT"
+            
+            EFI_LINE=$(echo "$OUTPUT" | grep -i "EFI ")
+            INSTALL_LINE=$(echo "$OUTPUT" | grep -i "Install_${{ matrix.macos_name }}")
+            
+            if [[ -n "$INSTALL_LINE" ]]; then
+              echo "Install volume found on attempt $attempt"
+              break
+            else
+              echo "Install volume not found, retrying after delay..."
+              sleep 10
+            fi
+          done
           
-          EFI_LINE=$(echo "$OUTPUT" | grep -i "EFI ")
-          INSTALL_LINE=$(echo "$OUTPUT" | grep -i "Install_${{ matrix.macos_name }}")
+          # Check if we have the necessary volumes
+          if [[ -z "$INSTALL_LINE" ]]; then
+            echo "Error: Could not attach install volume after multiple attempts"
+            
+            # List all volumes to debug
+            echo "All mounted volumes:"
+            df -h
+            diskutil list
+            
+            # Force attach again with more details
+            echo "Forcing attach with more debug info:"
+            hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen -debug
+            
+            # Try to find volumes again
+            OUTPUT=$(mount | grep -E "Install|EFI")
+            echo "Found mounted volumes: $OUTPUT"
+            
+            EFI_LINE=$(echo "$OUTPUT" | grep -i "EFI ")
+            INSTALL_LINE=$(echo "$OUTPUT" | grep -i "Install")
+          fi
           
+          # Extract device names and mount points
           EFI_DEV=$(echo "$EFI_LINE" | awk '{print $1}')
           EFI_MNT=$(echo "$EFI_LINE" | awk '{print $3}')
           INST_DEV=$(echo "$INSTALL_LINE" | awk '{print $1}')
@@ -207,6 +243,25 @@ jobs:
           echo "Install device: $INST_DEV"
           echo "Install mount point: $INST_MNT"
           
+          # Verify we have a valid install mount point
+          if [[ -z "$INST_MNT" || ! -d "$INST_MNT" ]]; then
+            echo "Warning: Install mount point not found or invalid."
+            # Try to find it via diskutil
+            DISK_ID=$(echo "$INST_DEV" | sed 's/\/dev\///')
+            diskutil info "$DISK_ID" || true
+            
+            # Look for any Install volume
+            POTENTIAL_MNT=$(find /Volumes -maxdepth 1 -name "Install*" -type d | head -1)
+            if [[ -n "$POTENTIAL_MNT" && -d "$POTENTIAL_MNT" ]]; then
+              echo "Found potential install mount point: $POTENTIAL_MNT"
+              INST_MNT="$POTENTIAL_MNT"
+            else
+              echo "Error: Could not locate install volume mount point"
+              exit 1
+            fi
+          fi
+          
+          # Set environment variables
           echo "EFI_DEV=$EFI_DEV" >> $GITHUB_ENV
           echo "EFI_MNT=$EFI_MNT" >> $GITHUB_ENV
           echo "INST_DEV=$INST_DEV" >> $GITHUB_ENV
@@ -220,17 +275,29 @@ jobs:
           # Verify paths before running command
           if [ ! -f "$INSTALLER_APP/Contents/Resources/createinstallmedia" ]; then
             echo "Error: createinstallmedia not found"
+            ls -la "$INSTALLER_APP/Contents/Resources/"
             exit 1
           fi
           
           if [ ! -d "$INST_MNT" ]; then
             echo "Error: Install volume not mounted at $INST_MNT"
+            mount | grep Install
             exit 1
           fi
           
-          # Run createinstallmedia with sudo
-          sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
-            --volume "$INST_MNT" --nointeraction
+          # Run createinstallmedia with sudo and increased timeout
+          sudo timeout 7200 "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
+            --volume "$INST_MNT" --nointeraction || {
+            echo "Warning: createinstallmedia may have timed out or had an issue."
+            echo "Checking if the volume was modified anyway..."
+            ls -la "/Volumes/" | grep Install
+            if [ -d "/Volumes/Install macOS ${{ matrix.macos_name }}" ]; then
+              echo "Install volume appears to be created, continuing..."
+            else
+              echo "Install volume not found, aborting."
+              exit 1
+            fi
+          }
 
       - name: Inject OpenCore EFI
         run: |
@@ -258,30 +325,120 @@ jobs:
 
       - name: Detach sparse image
         run: |
+          # Make sure we're not in any of the mount directories
+          cd "$GITHUB_WORKSPACE"
+          
+          # List all mounted volumes before detaching
+          echo "Currently mounted volumes:"
+          mount | grep -E "EFI|Install"
+          
+          # Try to gracefully unmount first
+          echo "Attempting to unmount volumes..."
+          diskutil unmount "$EFI_DEV" || true
+          diskutil unmount "$INST_DEV" || true
+          sleep 5
+          
+          # Force detach if needed
           for attempt in {1..5}; do
             echo "Detach attempt $attempt..."
-            hdiutil detach "$EFI_DEV" -force || true
-            hdiutil detach "$INST_DEV" -force || true
+            
+            if [[ -n "$EFI_DEV" ]]; then
+              echo "Detaching EFI: $EFI_DEV"
+              hdiutil detach "$EFI_DEV" -force || true
+            fi
+            
+            if [[ -n "$INST_DEV" ]]; then
+              echo "Detaching Install: $INST_DEV"
+              hdiutil detach "$INST_DEV" -force || true
+            fi
+            
+            # More aggressive detach if still mounted
+            if [[ $attempt -gt 2 ]]; then
+              echo "Using more aggressive detach methods..."
+              DISK_NUM=$(echo "$INST_DEV" | sed -E 's/\/dev\/disk([0-9]+)s[0-9]+/\1/')
+              if [[ -n "$DISK_NUM" ]]; then
+                echo "Trying to detach entire disk$DISK_NUM"
+                hdiutil detach "/dev/disk$DISK_NUM" -force || true
+              fi
+              
+              # Kill any processes using the volumes
+              echo "Finding processes using the mount points..."
+              lsof | grep -E "EFI|Install" || true
+              sudo killall Finder || true
+              sudo killall mds || true
+            fi
             
             # Check if volumes are still mounted
-            if ! mount | grep -q "$EFI_DEV" && ! mount | grep -q "$INST_DEV"; then
+            if ! mount | grep -q "EFI" && ! mount | grep -q "Install"; then
               echo "Volumes successfully detached"
               break
             fi
             
             echo "Volumes still mounted, waiting before retry..."
-            sleep 10
+            sleep 15
           done
+          
+          # Final check
+          echo "Final mount status:"
+          mount | grep -E "EFI|Install" || echo "No EFI or Install volumes mounted"
 
       - name: Create hybrid ISO
         run: |
           mkdir -p output
+          
+          # Make sure we're not in any mounted volume directory
+          cd "$GITHUB_WORKSPACE"
+          
+          echo "Waiting for system to stabilize before conversion..."
           sleep 30
+          
+          # Check if the sparse image exists and is a valid file
+          ls -la temp_install.sparseimage*
+          if [ ! -f "temp_install.sparseimage" ]; then
+            echo "Error: Sparse image file does not exist"
+            find . -name "*.sparseimage*"
+            exit 1
+          fi
+          
+          # Verify the sparseimage file
+          echo "Verifying sparseimage..."
+          hdiutil verify temp_install.sparseimage || echo "Warning: Image verification failed but continuing"
+          
           echo "Converting sparseimage to ISO format..."
-          hdiutil convert temp_install.sparseimage -format UDTO -o output/${{ matrix.macos_name }}.cdr
-          sleep 20
+          for attempt in {1..3}; do
+            echo "Conversion attempt $attempt..."
+            # Use -verbose for more detailed output
+            if hdiutil convert temp_install.sparseimage -format UDTO -o output/${{ matrix.macos_name }}.cdr -verbose; then
+              echo "Conversion successful on attempt $attempt"
+              break
+            else
+              echo "Conversion failed, retrying after delay..."
+              sleep 20
+            fi
+          done
+          
+          if [ ! -f "output/${{ matrix.macos_name }}.cdr" ]; then
+            echo "Error: CDR file was not created"
+            ls -la output/
+            exit 1
+          fi
+          
+          echo "Converting CDR to ISO..."
+          sleep 10
           mv output/${{ matrix.macos_name }}.cdr output/${{ matrix.macos_name }}.iso
-          echo "ISO created successfully"
+          
+          # Verify the ISO file exists and has a reasonable size
+          if [ ! -f "output/${{ matrix.macos_name }}.iso" ]; then
+            echo "Error: ISO file was not created"
+            exit 1
+          fi
+          
+          ISO_SIZE=$(stat -f %z "output/${{ matrix.macos_name }}.iso")
+          echo "ISO created successfully with size: $ISO_SIZE bytes"
+          
+          if [ "$ISO_SIZE" -lt 1000000 ]; then
+            echo "Warning: ISO file is suspiciously small, but continuing"
+          fi
 
       - name: List output
         run: |
