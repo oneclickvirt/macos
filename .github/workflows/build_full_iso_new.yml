@@ -38,6 +38,15 @@ jobs:
             catalog: "publicrelease"
 
     steps:
+      - name: Cleanup runner disk space
+        run: |
+          rm -rf ~/Library/Caches/Homebrew/*
+          brew cleanup --prune=all || true
+          rm -rf $RUNNER_WORKSPACE/_temp/*
+          rm -rf ~/Library/Caches/*
+          rm -rf ~/Library/Developer/Xcode/DerivedData/*
+          sudo rm -rf /private/var/folders/*
+
       - name: Checkout code
         uses: actions/checkout@v3
 
