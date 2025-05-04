@@ -57,12 +57,22 @@ jobs:
           fi
           echo "INSTALLER_APP=$INSTALLER_APP" >> $GITHUB_ENV
 
-      - name: Create sparse image
+      # - name: Create sparse image
+      #   run: |
+      #     hdiutil create -size 8g -layout GPTSPUD -fs HFS+J -type SPARSE \
+      #       -volname "Install_${{ matrix.macos_name }}" \
+      #       -o temp_install.sparseimage
+      - name: Create sparse image with dynamic size
         run: |
-          hdiutil create -size 8g -layout GPTSPUD -fs HFS+J -type SPARSE \
+          DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
+          # 转换为GB，向上取整
+          DOWNLOAD_SIZE_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 )) # 1GB = 1048576KB
+          IMAGE_SIZE=$((DOWNLOAD_SIZE_GB + 1))g
+          echo "Creating sparse image with size: $IMAGE_SIZE"
+          hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE \
             -volname "Install_${{ matrix.macos_name }}" \
             -o temp_install.sparseimage
-
+              
       - name: Attach sparse image
         id: attach
         run: |
