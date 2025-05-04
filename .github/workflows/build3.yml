@@ -19,7 +19,8 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Install dependencies
-        run: brew install wget sshpass
+        run: |
+          brew install wget sshpass
 
       - name: Clone gibMacOS
         run: |
@@ -40,7 +41,7 @@ jobs:
           if [ -z "$DIR" ]; then echo "Error: download dir not found"; exit 1; fi
           echo "DOWNLOAD_DIR=$DIR" >> $GITHUB_ENV
 
-      # macOS <=10.15: build installer.app from pkgs
+      # For macOS <= 10.15: build installer.app from PKGs
       - name: Build installer app
         if: ${{ startsWith(matrix.macos_version, '10.') }}
         run: |
@@ -51,7 +52,7 @@ jobs:
           if [ -z "$APP" ]; then echo "Error: built installer.app not found"; exit 1; fi
           echo "INSTALLER_APP=$PWD/$APP" >> $GITHUB_ENV
 
-      # macOS >=11: locate .app directly
+      # For macOS >= 11: locate installer.app directly
       - name: Locate installer app
         if: ${{ ! startsWith(matrix.macos_version, '10.') }}
         run: |
@@ -61,41 +62,45 @@ jobs:
 
       - name: Create sparse image
         run: |
-          hdiutil create -size 16g -layout GPTSPUD -fs HFS+J -type SPARSE -volname "Install_${{ matrix.macos_name }}" -o temp_install
+          hdiutil create -size 16g -layout GPTSPUD -fs HFS+J -type SPARSE \
+            -volname "Install_${{ matrix.macos_name }}" \
+            -o temp_install.sparseimage
 
       - name: Attach sparse image
         id: attach
         run: |
           OUTPUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
           DEVICE=$(echo "$OUTPUT" | head -1 | awk '{print $1}')
-          MOUNT_POINT=$(echo "$OUTPUT" | tail -1 | awk '{print $3}')
+          EFI_MNT=$(echo "$OUTPUT" | head -1 | awk '{print $3}')
+          INST_MNT=$(echo "$OUTPUT" | tail -1 | awk '{print $3}')
           echo "DEVICE=$DEVICE" >> $GITHUB_ENV
-          echo "MOUNT_POINT=$MOUNT_POINT" >> $GITHUB_ENV
+          echo "EFI_MNT=$EFI_MNT" >> $GITHUB_ENV
+          echo "INST_MNT=$INST_MNT" >> $GITHUB_ENV
 
       - name: Run createinstallmedia
         run: |
           echo "Using installer at $INSTALLER_APP"
-          sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "$MOUNT_POINT" --nointeraction
+          sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
+            --volume "$INST_MNT" --nointeraction
 
-      - name: Unmount sparse image
+      - name: Inject OpenCore EFI
         run: |
-          diskutil unmount "$MOUNT_POINT" || true
-          hdiutil detach "$DEVICE" || true
+          # Mount EFI partition if not mounted
+          diskutil mount "$DEVICE"
+          sudo cp -R EFI/* "$EFI_MNT/"
+          diskutil unmount "$EFI_MNT" || true
 
-      - name: Create hybrid ISO with EFI
+      - name: Detach sparse image
+        run: |
+          hdiutil detach "$DEVICE"
+          hdiutil detach "$(echo \"$OUTPUT\" | tail -1 | awk '{print $1}')"
+
+      - name: Create hybrid ISO
         run: |
           mkdir -p output
-          # Create a hybrid ISO that includes HFS+ and Joliet, suitable for OpenCore
-          hdiutil makehybrid -iso -joliet -hfs -hfs-volume-name "Install_${{ matrix.macos_name }}" \
-            temp_install.sparseimage -o output/${{ matrix.macos_name }}_full.iso
-      - name: ISO
-        run: |
-          OUTPUT=$(hdiutil attach output/${{ matrix.macos_name }}_full.iso -noverify -nobrowse)
-          EFI_MOUNT=$(echo "$OUTPUT" | grep -i "EFI " | awk '{print $3}')
-          if [ -z "$EFI_MOUNT" ]; then echo "Error: EFI mount not found"; exit 1; fi
-          sudo cp -R EFI "$EFI_MOUNT/"
-          diskutil unmount "$EFI_MOUNT" || true
-          echo "$OUTPUT" | awk '/dev/ {print $1}' | xargs -n1 hdiutil detach || true
+          hdiutil makehybrid -iso -joliet -hfs \
+            temp_install.sparseimage \
+            -o output/${{ matrix.macos_name }}_full.iso
 
       - name: List output
         run: ls -lah output/
@@ -103,5 +108,9 @@ jobs:
       - name: Upload via SCP
         run: |
           ISO=output/${{ matrix.macos_name }}_full.iso
-          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no "$ISO" root@${{ secrets.IP }}:/root/macOS-images/${{ matrix.macos_name }}/
-          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "ls -lah /root/macOS-images/${{ matrix.macos_name }}/"
+          sshpass -p "${{ secrets.PASSWORD }}" \
+            scp -o StrictHostKeyChecking=no "$ISO" \
+            root@${{ secrets.IP }}:/root/macOS-images/${{ matrix.macos_name }}/
+          sshpass -p "${{ secrets.PASSWORD }}" \
+            ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} \
+            "ls -lah /root/macOS-images/${{ matrix.macos_name }}/"
