@@ -70,32 +70,44 @@ build_script:
     echo "Creating sparse image of size $IMAGE_SIZE …"
     hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE -volname "Install_$MACOS_NAME" -o temp_install.sparseimage
 
-  # 挂载镜像并记录设备/挂载点
+  # 挂载镜像（可读写）
   - |
-    ATTACH_OUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
-    EFI_DEV=$(echo "$ATTACH_OUT" | grep -i "EFI " | awk '{print $1}')
-    EFI_MNT=$(echo "$ATTACH_OUT" | grep -i "EFI " | awk '{print $3}')
-    INST_DEV=$(echo "$ATTACH_OUT" | grep -i "Install_$MACOS_NAME" | awk '{print $1}')
-    INST_MNT=$(echo "$ATTACH_OUT" | grep -i "Install_$MACOS_NAME" | awk '{print $3}')
-
+    ATTACH_OUT=$(hdiutil attach temp_install.sparseimage \
+      -nobrowse -noverify -noautoopen -readwrite)
+  
+  # 解析设备与挂载点
+  - |
+    INSTALL_VOL="/Volumes/Install macOS $MACOS_DISPLAY_NAME"
+    EFI_DEV=$(echo "$ATTACH_OUT" | awk '/EFI$/ {print $1}')
+    EFI_MNT=$(echo "$ATTACH_OUT" | awk '/EFI$/ {print $3}')
+    INST_DEV=$(echo "$ATTACH_OUT" | awk -v vol="$INSTALL_VOL" \
+               '$0 ~ vol {print $1}')
+  
   # 运行 createinstallmedia
-  - sudo "$APP/Contents/Resources/createinstallmedia" --volume "$INST_MNT" --nointeraction --downloadassets
-
+  - |
+    sudo "$APP/Contents/Resources/createinstallmedia" \
+      --volume "$INSTALL_VOL" --nointeraction --downloadassets
+  
   # 注入 OpenCore EFI
   - |
     diskutil mount "$EFI_DEV"
+    if [ ! -d "$EFI_MNT" ]; then
+      echo "Error: EFI 挂载点 $EFI_MNT 不存在"; exit 1
+    fi
     sudo cp -R EFI/* "$EFI_MNT/"
-    diskutil unmount "$EFI_DEV" || true
-
-  # 卸载镜像
+    diskutil unmount "$EFI_DEV"
+  
+  # 卸载镜像（强制 + 顺序）
   - |
-    hdiutil detach "$EFI_DEV" || true
-    hdiutil detach "$INST_DEV" || true
-
+    sleep 2
+    hdiutil detach "$INST_DEV" -force || true
+    hdiutil detach "$EFI_DEV" -force || true
+  
   # 转换并生成 ISO
   - |
     mkdir -p output
-    hdiutil convert temp_install.sparseimage -format UDTO -o output/$MACOS_NAME.cdr
+    hdiutil convert temp_install.sparseimage \
+      -format UDTO -o output/$MACOS_NAME.cdr
     mv output/$MACOS_NAME.cdr output/$MACOS_NAME.iso
 
   # 压缩并上传
