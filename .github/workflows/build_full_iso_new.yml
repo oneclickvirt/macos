@@ -13,22 +13,27 @@ jobs:
         include:
           - macos_version: "20G1427"
             macos_name: "big-sur"
+            macos_display_name: "Big Sur"
             macos_version_number: "11.7"
             catalog: "publicrelease"
           - macos_version: "21H1123"
             macos_name: "monterey"
+            macos_display_name: "Monterey"
             macos_version_number: "12"
             catalog: "publicrelease"
           - macos_version: "22H313"
             macos_name: "ventura"
+            macos_display_name: "Ventura"
             macos_version_number: "13"
             catalog: "publicrelease"
           - macos_version: "23H311"
             macos_name: "sonoma"
+            macos_display_name: "Sonoma"
             macos_version_number: "14"
             catalog: "publicrelease"
           - macos_version: "24C101"
             macos_name: "sequoia"
+            macos_display_name: "Sequoia"
             macos_version_number: "15"
             catalog: "publicrelease"
 
@@ -42,36 +47,24 @@ jobs:
 
       - name: Download macOS Installer
         run: |
-          echo "Downloading macOS installer ${{ matrix.macos_name }} ${{ matrix.macos_version_number }}"
+          echo "Downloading macOS installer ${{ matrix.macos_display_name }} ${{ matrix.macos_version_number }}"
           sudo softwareupdate --fetch-full-installer --full-installer-version ${{ matrix.macos_version_number }} || true
 
-          # Fallback via mist if softwareupdate fails
-          if [ ! -d "/Applications/Install macOS*.app" ]; then
-            git clone https://github.com/ninxsoft/mist.git
-            cd mist && swift build -c release
-            mkdir -p ~/Downloads/macOS
-            ./.build/release/mist download \
-              --include-betas \
-              --output-directory ~/Downloads/macOS \
-              --catalog ${{ matrix.catalog }} \
-              --version ${{ matrix.macos_version }} \
-              --format pkg
-            PKG=$(find ~/Downloads/macOS -name "*.pkg" | head -n1)
-            sudo installer -pkg "$PKG" -target /
-          fi
-
-          # Locate the installer app
-          INSTALLER_APP=$(find /Applications -maxdepth 1 -name "Install macOS*.app" \
-            | grep -i "${{ matrix.macos_name }}" | head -n1)
-          echo "INSTALLER_APP=$INSTALLER_APP" >> $GITHUB_ENV
-          ls -la "$INSTALLER_APP"
+      - name: Locate Installer App
+        run: |
+          EXPORT="$(
+            find /Applications -maxdepth 1 -name "Install macOS*.app" \
+              | grep "${{ matrix.macos_display_name }}" \
+              | head -n1
+          )"
+          echo "INSTALLER_APP=$EXPORT" >> $GITHUB_ENV
 
       - name: Create temporary installer volume
         run: |
           hdiutil create -size 16384m \
             -layout SPUD \
             -fs HFS+J \
-            -volname "Install macOS ${{ matrix.macos_name | capitalize }}" \
+            -volname "Install macOS ${{ matrix.macos_display_name }}" \
             /tmp/Install_${{ matrix.macos_name }}.dmg
 
       - name: Attach installer volume
@@ -81,7 +74,7 @@ jobs:
 
       - name: Run createinstallmedia
         run: |
-          sudo "/Applications/Install macOS ${{ matrix.macos_name | capitalize }}.app/Contents/Resources/createinstallmedia" \
+          sudo "/Applications/Install macOS ${{ matrix.macos_display_name }}.app/Contents/Resources/createinstallmedia" \
             --volume /Volumes/InstallBuild --nointeraction
 
       - name: Eject installer volume
@@ -91,10 +84,8 @@ jobs:
       - name: Convert DMG to ISO
         run: |
           mkdir -p output
-          # Produce a raw UDTO (CD‑master) image…
           hdiutil convert /tmp/Install_${{ matrix.macos_name }}.dmg \
             -format UDTO -o output/${{ matrix.macos_name }}
-          # …then rename to .iso
           mv output/${{ matrix.macos_name }}.cdr output/${{ matrix.macos_name }}.iso
 
       - name: (Optional) Make hybrid ISO
@@ -103,6 +94,7 @@ jobs:
             -iso -joliet \
             -o output/${{ matrix.macos_name }}-hybrid.iso \
             output/${{ matrix.macos_name }}.iso
+
       - name: Compress ISO with 7z
         run: |
           ISO=output/${{ matrix.macos_name }}.iso
