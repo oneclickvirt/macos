@@ -75,7 +75,6 @@ jobs:
         run: |
           MAJOR=$(echo "${{ matrix.macos_version_number }}" | cut -d. -f1)
           if [ "$MAJOR" -lt 11 ]; then
-            # macOS 10.x：已自带 Install*.app
             APP=$(find "$DOWNLOAD_DIR" -maxdepth 2 -type d -name "Install*.app" | head -n1)
             if [ -z "$APP" ]; then
               echo "Error: installer.app not found in $DOWNLOAD_DIR"
@@ -83,16 +82,41 @@ jobs:
             fi
             INSTALLER_APP="$APP"
           else
-            wget https://raw.githubusercontent.com/oneclickvirt/macos/main/BuildmacOSInstallApp.py -O BuildmacOSInstallApp.py
-            chmod +x BuildmacOSInstallApp.py
-            python3 BuildmacOSInstallApp.py "$DOWNLOAD_DIR" installer_app
-            APP=$(find installer_app -maxdepth 2 -type d -name "Install*.app" | head -n1)
+            APP=$(find "$DOWNLOAD_DIR" -type d -name "*.app" | grep -i "Install" | head -n1)
             if [ -z "$APP" ]; then
-              echo "Error: built installer.app not found in installer_app"
+              PKG=$(find "$DOWNLOAD_DIR" -name "InstallAssistant.pkg" | head -n1)
+              if [ -z "$PKG" ]; then
+                PKG=$(find "$DOWNLOAD_DIR" -name "*.pkg" | head -n1)
+              fi
+              if [ -n "$PKG" ]; then
+                echo "找到安装包: $PKG，正在解包..."
+                mkdir -p installer_tmp
+                sudo xar -xf "$PKG" -C installer_tmp
+                PAYLOAD=$(find installer_tmp -name "Payload" | head -n1)
+                if [ -n "$PAYLOAD" ]; then
+                  mkdir -p installer_app
+                  cd installer_app
+                  sudo cat "$PAYLOAD" | gzip -d | cpio -i
+                  cd ..
+                  APP=$(find installer_app -type d -name "Install*.app" | head -n1)
+                  if [ -z "$APP" ]; then
+                    APP=$(find installer_app -type d -name "*.app" | grep -i "Install" | head -n1)
+                  fi
+                fi
+              fi
+            fi
+            if [ -z "$APP" ]; then
+              echo "Error: 无法找到安装应用程序"
+              ls -la "$DOWNLOAD_DIR"
               exit 1
             fi
-            INSTALLER_APP="$PWD/$APP"
+            INSTALLER_APP="$APP"
           fi
+          if [ ! -d "$INSTALLER_APP" ]; then
+            echo "Error: 安装应用程序路径无效: $INSTALLER_APP"
+            exit 1
+          fi
+          echo "找到安装应用程序: $INSTALLER_APP"
           echo "INSTALLER_APP=$INSTALLER_APP" >> $GITHUB_ENV
 
       - name: Create sparse image with dynamic size
