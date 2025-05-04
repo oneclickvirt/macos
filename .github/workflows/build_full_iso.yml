@@ -73,7 +73,7 @@ jobs:
 
       - name: Prepare installer app
         run: |
-          MAJOR=${{ matrix.macos_version_number%%.*}}
+          MAJOR=$(echo "${{ matrix.macos_version_number }}" | cut -d. -f1)
           if [ "$MAJOR" -lt 11 ]; then
             # macOS 10.x：已自带 Install*.app
             APP=$(find "$DOWNLOAD_DIR" -maxdepth 2 -type d -name "Install*.app" | head -n1)
@@ -93,7 +93,6 @@ jobs:
             fi
             INSTALLER_APP="$PWD/$APP"
           fi
-
           echo "INSTALLER_APP=$INSTALLER_APP" >> $GITHUB_ENV
 
       - name: Create sparse image with dynamic size
