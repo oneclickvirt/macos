@@ -1,121 +1,114 @@
 image: macos
-parallel: true
+
+# 2. 定义环境变量矩阵：每一行对应一个并行作业，注入不同 macOS 参数
 environment:
   matrix:
-    - macos_version_code: "20G1427"
-      macos_name: "big‑sur"
-      macos_display_name: "Big Sur"
-      macos_version_number: "11.7"
-      catalog: "publicrelease"
-    - macos_version_code: "21H1123"
-      macos_name: "monterey"
-      macos_display_name: "Monterey"
-      macos_version_number: "12"
-      catalog: "publicrelease"
-    - macos_version_code: "22H313"
-      macos_name: "ventura"
-      macos_display_name: "Ventura"
-      macos_version_number: "13"
-      catalog: "publicrelease"
-    - macos_version_code: "23H311"
-      macos_name: "sonoma"
-      macos_display_name: "Sonoma"
-      macos_version_number: "14"
-      catalog: "publicrelease"
-    - macos_version_code: "24C101"
-      macos_name: "sequoia"
-      macos_display_name: "Sequoia"
-      macos_version_number: "15"
-      catalog: "publicrelease"
+    - MACOS_VERSION_CODE: "20G1427"
+      MACOS_NAME: "big‑sur"
+      MACOS_DISPLAY_NAME: "Big Sur"
+      MACOS_VERSION_NUMBER: "11.7"
+      CATALOG: "publicrelease"
+    - MACOS_VERSION_CODE: "21H1123"
+      MACOS_NAME: "monterey"
+      MACOS_DISPLAY_NAME: "Monterey"
+      MACOS_VERSION_NUMBER: "12"
+      CATALOG: "publicrelease"
+    - MACOS_VERSION_CODE: "22H313"
+      MACOS_NAME: "ventura"
+      MACOS_DISPLAY_NAME: "Ventura"
+      MACOS_VERSION_NUMBER: "13"
+      CATALOG: "publicrelease"
+    - MACOS_VERSION_CODE: "23H311"
+      MACOS_NAME: "sonoma"
+      MACOS_DISPLAY_NAME: "Sonoma"
+      MACOS_VERSION_NUMBER: "14"
+      CATALOG: "publicrelease"
+    - MACOS_VERSION_CODE: "24C101"
+      MACOS_NAME: "sequoia"
+      MACOS_DISPLAY_NAME: "Sequoia"
+      MACOS_VERSION_NUMBER: "15"
+      CATALOG: "publicrelease"
 
+# 3. 控制失败策略：false 表示即便某个作业失败，也会等待其他作业完成（可根据需要设 true）
+matrix:
+  fast_finish: true
 
+# 4. 构建脚本：按矩阵变量顺序执行完整的打包流程
 build_script:
-  # 1. 安装依赖
+  # 安装基础依赖
   - brew update
   - brew install wget sshpass p7zip
 
-  # 2. 克隆 gibMacOS 并下载 macOS 构件
+  # 克隆并下载 macOS 安装组件
   - git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
   - chmod +x gibMacOS/gibMacOS.command
   - cd gibMacOS
-  - python3 gibMacOS.py --catalog "%catalog%" --version "%macos_version_number%" -b "%macos_version_code%"
+  - python3 gibMacOS.py --catalog "$CATALOG" \
+                       --version "$MACOS_VERSION_NUMBER" \
+                       -b "$MACOS_VERSION_CODE"
   - cd ..
 
-  # 3. 找到下载目录并设环境变量
+  # 定位下载目录
   - |
-    DOWNLOAD_DIR=$(find "$PWD/gibMacOS/macOS Downloads" -type d -name "*%macos_version_code%*" | head -n1)
+    DOWNLOAD_DIR=$(find "$PWD/gibMacOS/macOS Downloads" \
+      -type d -name "*$MACOS_VERSION_CODE*" | head -n1)
     if [ -z "$DOWNLOAD_DIR" ]; then
-      echo "Error: download dir not found"
-      exit 1
+      echo "Error: download dir not found"; exit 1
     fi
-    echo "DOWNLOAD_DIR=$DOWNLOAD_DIR" >> ~/.profile
-  - source ~/.profile
 
-  # 4. 安装 InstallAssistant 到 /Applications
+  # 安装 InstallAssistant.pkg 到 /Applications
   - |
     PKG=$(find "$DOWNLOAD_DIR" -maxdepth 1 -name "InstallAssistant.pkg" | head -n1)
     sudo installer -pkg "$PKG" -target /Applications
-    APP="/Applications/Install macOS %macos_display_name%.app"
+    APP="/Applications/Install macOS $MACOS_DISPLAY_NAME.app"
     if [ ! -d "$APP" ]; then
-      echo "Error: $APP not found"
-      exit 1
+      echo "Error: $APP not found"; exit 1
     fi
-    echo "INSTALLER_APP=$APP" >> ~/.profile
-  - source ~/.profile
 
-  # 5. 创建可扩展稀疏镜像
+  # 创建稀疏镜像
   - |
     DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
     DOWNLOAD_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 ))
     IMAGE_SIZE="${DOWNLOAD_GB}g"
     hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE \
-      -volname "Install_%macos_name%" -o temp_install.sparseimage
+      -volname "Install_$MACOS_NAME" -o temp_install.sparseimage
 
-  # 6. 挂载稀疏镜像并记录设备节点
+  # 挂载镜像并记录设备/挂载点
   - |
     ATTACH_OUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
     EFI_DEV=$(echo "$ATTACH_OUT" | grep -i "EFI " | awk '{print $1}')
     EFI_MNT=$(echo "$ATTACH_OUT" | grep -i "EFI " | awk '{print $3}')
-    INST_DEV=$(echo "$ATTACH_OUT" | grep -i "Install_%macos_name%" | awk '{print $1}')
-    INST_MNT=$(echo "$ATTACH_OUT" | grep -i "Install_%macos_name%" | awk '{print $3}')
+    INST_DEV=$(echo "$ATTACH_OUT" | grep -i "Install_$MACOS_NAME" | awk '{print $1}')
+    INST_MNT=$(echo "$ATTACH_OUT" | grep -i "Install_$MACOS_NAME" | awk '{print $3}')
 
-  # 7. 运行 createinstallmedia
-  - |
-    sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
-      --volume "$INST_MNT" \
-      --nointeraction \
-      --downloadassets
+  # 运行 createinstallmedia
+  - sudo "$APP/Contents/Resources/createinstallmedia" \
+         --volume "$INST_MNT" \
+         --nointeraction \
+         --downloadassets
 
-  # 8. 注入 OpenCore EFI
+  # 注入 OpenCore EFI
   - |
     diskutil mount "$EFI_DEV"
-    EFI_PT=$(mount | grep "$EFI_DEV" | awk '{print $3}')
-    sudo cp -R EFI/* "$EFI_PT/"
+    sudo cp -R EFI/* "$EFI_MNT/"
     diskutil unmount "$EFI_DEV" || true
 
-  # 9. 卸载镜像
+  # 卸载镜像
   - |
     hdiutil detach "$EFI_DEV" || true
     hdiutil detach "$INST_DEV" || true
 
-  # 10. 转换并生成混合 ISO
+  # 转换并生成 ISO
   - |
     mkdir -p output
-    hdiutil convert temp_install.sparseimage -format UDTO -o output/%macos_name%.cdr
-    mv output/%macos_name%.cdr output/%macos_name%.iso
+    hdiutil convert temp_install.sparseimage -format UDTO -o output/$MACOS_NAME.cdr
+    mv output/$MACOS_NAME.cdr output/$MACOS_NAME.iso
 
-  # 11. 压缩 ISO
-  - 7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on "output/%macos_name%.iso.7z" "output/%macos_name%.iso"
-
-  # 12. 验证并上传
-  - 7z t "output/%macos_name%.iso.7z"
-  - |
-    sshpass -p "%PASSWORD%" ssh -o StrictHostKeyChecking=no root@%IP% "mkdir -p /root/macos"
-    sshpass -p "%PASSWORD%" scp -o StrictHostKeyChecking=no \
-      output/%macos_name%.iso.7z \
-      root@%IP%:/root/macos/
-    sshpass -p "%PASSWORD%" ssh -o StrictHostKeyChecking=no root@%IP% "ls -lah /root/macos/"
-
-secure:
-  - IP: ENV_VAR       # 目标服务器 IP
-  - PASSWORD: ENV_VAR # SSH 密码
+  # 压缩并上传
+  - 7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on "output/$MACOS_NAME.iso.7z" "output/$MACOS_NAME.iso"
+  - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" \
+      "mkdir -p /root/macos && exit"
+  - sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no \
+      "output/$MACOS_NAME.iso.7z" root@"$IP":/root/macos/
+  - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" \
+      "ls -lah /root/macos/"
