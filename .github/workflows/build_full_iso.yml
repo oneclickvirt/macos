@@ -75,6 +75,7 @@ jobs:
         run: |
           MAJOR=$(echo "${{ matrix.macos_version_number }}" | cut -d. -f1)
           if [ "$MAJOR" -lt 11 ]; then
+            # macOS 10.x：已自带 Install*.app
             APP=$(find "$DOWNLOAD_DIR" -maxdepth 2 -type d -name "Install*.app" | head -n1)
             if [ -z "$APP" ]; then
               echo "Error: installer.app not found in $DOWNLOAD_DIR"
@@ -82,41 +83,70 @@ jobs:
             fi
             INSTALLER_APP="$APP"
           else
-            APP=$(find "$DOWNLOAD_DIR" -type d -name "*.app" | grep -i "Install" | head -n1)
+            APP=$(find "$DOWNLOAD_DIR" -type d -name "Install*.app" | head -n1)
             if [ -z "$APP" ]; then
               PKG=$(find "$DOWNLOAD_DIR" -name "InstallAssistant.pkg" | head -n1)
-              if [ -z "$PKG" ]; then
-                PKG=$(find "$DOWNLOAD_DIR" -name "*.pkg" | head -n1)
-              fi
               if [ -n "$PKG" ]; then
-                echo "找到安装包: $PKG，正在解包..."
-                mkdir -p installer_tmp
-                sudo xar -xf "$PKG" -C installer_tmp
-                PAYLOAD=$(find installer_tmp -name "Payload" | head -n1)
-                if [ -n "$PAYLOAD" ]; then
-                  mkdir -p installer_app
-                  cd installer_app
-                  sudo cat "$PAYLOAD" | gzip -d | cpio -i
-                  cd ..
-                  APP=$(find installer_app -type d -name "Install*.app" | head -n1)
-                  if [ -z "$APP" ]; then
-                    APP=$(find installer_app -type d -name "*.app" | grep -i "Install" | head -n1)
-                  fi
+                echo "找到安装包: $PKG，正在安装..."
+                mkdir -p installer_app
+                sudo pkgutil --expand "$PKG" pkg_expanded
+                if [ -d "pkg_expanded" ]; then
+                  # 遍历所有可能的 Payload 文件
+                  for payload in $(find pkg_expanded -name "Payload"); do
+                    echo "处理 Payload: $payload"
+                    temp_dir=$(mktemp -d)
+                    (cd "$temp_dir" && cat "$payload" | gunzip -dc | cpio -i 2>/dev/null || true)
+                    temp_app=$(find "$temp_dir" -type d -name "Install*.app" | head -n1)
+                    if [ -n "$temp_app" ]; then
+                      cp -R "$temp_app" installer_app/
+                      rm -rf "$temp_dir"
+                      break
+                    fi
+                    rm -rf "$temp_dir"
+                  done
                 fi
+                APP=$(find installer_app -type d -name "Install*.app" | head -n1)
+                if [ -z "$APP" ]; then
+                  echo "尝试使用原始安装包创建安装应用..."
+                  mkdir -p "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/SharedSupport"
+                  cp "$PKG" "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/SharedSupport/SharedSupport.dmg"
+                  echo '<?xml version="1.0" encoding="UTF-8"?>' > "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/Info.plist"
+                  echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' >> "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/Info.plist"
+                  echo '<plist version="1.0">' >> "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/Info.plist"
+                  echo '<dict>' >> "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/Info.plist"
+                  echo '    <key>CFBundleIdentifier</key>' >> "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/Info.plist"
+                  echo "    <string>com.apple.InstallAssistant.${{ matrix.macos_name }}</string>" >> "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/Info.plist"
+                  echo '    <key>CFBundleName</key>' >> "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/Info.plist"
+                  echo "    <string>Install macOS ${{ matrix.macos_name }}</string>" >> "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/Info.plist"
+                  echo '    <key>CFBundleExecutable</key>' >> "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/Info.plist"
+                  echo '    <string>InstallAssistant</string>' >> "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/Info.plist"
+                  echo '</dict>' >> "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/Info.plist"
+                  echo '</plist>' >> "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/Info.plist"
+                  if [ -f "$DOWNLOAD_DIR/InstallInfo.plist" ]; then
+                    cp "$DOWNLOAD_DIR/InstallInfo.plist" "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/SharedSupport/"
+                  fi
+                  for file in "$DOWNLOAD_DIR"/*; do
+                    base_name=$(basename "$file")
+                    if [[ "$base_name" != "InstallAssistant.pkg" && "$base_name" != "."* ]]; then
+                      cp -R "$file" "installer_app/Install macOS ${{ matrix.macos_name }}.app/Contents/SharedSupport/"
+                    fi
+                  done
+                  APP="installer_app/Install macOS ${{ matrix.macos_name }}.app"
+                fi
+              else
+                echo "Error: 无法找到 InstallAssistant.pkg"
+                ls -la "$DOWNLOAD_DIR"
+                exit 1
               fi
             fi
-            if [ -z "$APP" ]; then
-              echo "Error: 无法找到安装应用程序"
-              ls -la "$DOWNLOAD_DIR"
-              exit 1
-            fi
-            INSTALLER_APP="$APP"
+            INSTALLER_APP="$PWD/$APP"
           fi
           if [ ! -d "$INSTALLER_APP" ]; then
             echo "Error: 安装应用程序路径无效: $INSTALLER_APP"
             exit 1
           fi
           echo "找到安装应用程序: $INSTALLER_APP"
+          ls -la "$INSTALLER_APP"
           echo "INSTALLER_APP=$INSTALLER_APP" >> $GITHUB_ENV
 
       - name: Create sparse image with dynamic size
