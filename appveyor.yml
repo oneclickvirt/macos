@@ -43,9 +43,7 @@ build_script:
   - git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
   - chmod +x gibMacOS/gibMacOS.command
   - cd gibMacOS
-  - python3 gibMacOS.py --catalog "$CATALOG" \
-                       --version "$MACOS_VERSION_NUMBER" \
-                       -b "$MACOS_VERSION_CODE"
+  - python3 gibMacOS.py --catalog "$CATALOG" --version "$MACOS_VERSION_NUMBER" -b "$MACOS_VERSION_CODE"
   - cd ..
 
   # 定位下载目录
