@@ -19,8 +19,7 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Install dependencies
-        run: |
-          brew install wget sshpass
+        run: brew install wget sshpass
 
       - name: Clone gibMacOS
         run: |
@@ -35,18 +34,15 @@ jobs:
                              -b "${{ matrix.macos_build }}"
 
       - name: Determine download directory
+        id: find_dir
         run: |
           DIR=$(find "${GITHUB_WORKSPACE}/gibMacOS/macOS Downloads" -type d -name "*${{ matrix.macos_build }}*" | head -n1)
-          if [ -z "$DIR" ]; then
-            echo "Error: download dir not found"
-            exit 1
-          fi
+          if [ -z "$DIR" ]; then echo "Error: download dir not found"; exit 1; fi
           echo "DOWNLOAD_DIR=$DIR" >> $GITHUB_ENV
 
-      # For macOS <=10.15 build installer.app from pkgs
-      - name: Build installer app for older macOS
-        if: startsWith(matrix.macos_version, '10.')
-        working-directory: ${{ github.workspace }}
+      # macOS <=10.15: build installer.app from pkgs
+      - name: Build installer app
+        if: ${{ startsWith(matrix.macos_version, '10.') }}
         run: |
           wget https://raw.githubusercontent.com/oneclickvirt/macos/main/BuildmacOSInstallApp.py -O BuildmacOSInstallApp.py
           chmod +x BuildmacOSInstallApp.py
@@ -54,12 +50,13 @@ jobs:
           APP=$(find installer_app -maxdepth 2 -type d -name "Install*.app" | head -n1)
           if [ -z "$APP" ]; then echo "Error: built installer.app not found"; exit 1; fi
           echo "INSTALLER_APP=$PWD/$APP" >> $GITHUB_ENV
-      # For macOS >=11 assume .app in DOWNLOAD_DIR
-      - name: Locate installer app for newer macOS
-        if: startsWith(matrix.macos_version, '11') or startsWith(matrix.macos_version, '12') or startsWith(matrix.macos_version, '13') or startsWith(matrix.macos_version, '14') or startsWith(matrix.macos_version, '15')
+
+      # macOS >=11: locate .app directly
+      - name: Locate installer app
+        if: ${{ ! startsWith(matrix.macos_version, '10.') }}
         run: |
           APP=$(find "$DOWNLOAD_DIR" -maxdepth 2 -type d -name "Install*.app" | head -n1)
-          if [ -z "$APP" ]; then echo "Error: installer.app not found in $DOWNLOAD_DIR"; exit 1; fi
+          if [ -z "$APP" ]; then echo "Error: installer.app not found"; exit 1; fi
           echo "INSTALLER_APP=$APP" >> $GITHUB_ENV
 
       - name: Create sparse image
@@ -67,16 +64,17 @@ jobs:
           hdiutil create -size 16g -layout GPTSPUD -fs HFS+J -type SPARSE -volname "Install_${{ matrix.macos_name }}" -o temp_install
 
       - name: Attach sparse image
+        id: attach
         run: |
-          ATTACH_OUTPUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
-          DEVICE=$(echo "$ATTACH_OUTPUT" | head -1 | awk '{print $1}')
-          MOUNT_POINT=$(echo "$ATTACH_OUTPUT" | tail -1 | awk '{print $3}')
+          OUTPUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
+          DEVICE=$(echo "$OUTPUT" | head -1 | awk '{print $1}')
+          MOUNT_POINT=$(echo "$OUTPUT" | tail -1 | awk '{print $3}')
           echo "DEVICE=$DEVICE" >> $GITHUB_ENV
           echo "MOUNT_POINT=$MOUNT_POINT" >> $GITHUB_ENV
 
       - name: Run createinstallmedia
         run: |
-          echo "Installer app: $INSTALLER_APP"
+          echo "Using installer at $INSTALLER_APP"
           sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "$MOUNT_POINT" --nointeraction
 
       - name: Unmount sparse image
@@ -92,18 +90,15 @@ jobs:
 
       - name: Inject OpenCore EFI
         run: |
-          # Mount ISO and locate EFI partition
-          ATTACH_OUTPUT=$(hdiutil attach output/${{ matrix.macos_name }}_full.iso -noverify -nobrowse)
-          EFI_MOUNT=$(echo "$ATTACH_OUTPUT" | grep -i "EFI " | awk '{print $3}')
+          OUTPUT=$(hdiutil attach output/${{ matrix.macos_name }}_full.iso -noverify -nobrowse)
+          EFI_MOUNT=$(echo "$OUTPUT" | grep -i "EFI " | awk '{print $3}')
           if [ -z "$EFI_MOUNT" ]; then echo "Error: EFI mount not found"; exit 1; fi
           sudo cp -R EFI "$EFI_MOUNT/"
           diskutil unmount "$EFI_MOUNT" || true
-          # detach all
-          echo "$ATTACH_OUTPUT" | awk '/dev/ {print $1}' | xargs -n1 hdiutil detach || true
+          echo "$OUTPUT" | awk '/dev/ {print $1}' | xargs -n1 hdiutil detach || true
 
       - name: List output
-        run: |
-          ls -lah output/
+        run: ls -lah output/
 
       - name: Upload via SCP
         run: |
