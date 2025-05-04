@@ -1,0 +1,254 @@
+name: macOS Image Builder2
+
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: '0 0 1 * *'  # Run monthly on the 1st
+
+jobs:
+  build2:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - macos_version: "17G66"
+            macos_name: "high-sierra"
+            macos_version_number: "10.13"
+            catalog: "publicrelease"
+          # - macos_version: "18F2059"
+          #   macos_name: "mojave"
+          #   macos_version_number: "10.14"
+          #   catalog: "publicrelease"
+          # - macos_version: "19D2064"
+          #   macos_name: "catalina"
+          #   macos_version_number: "10.15"
+          #   catalog: "publicrelease"
+          # - macos_version: "20G1427"
+          #   macos_name: "big-sur"
+          #   macos_version_number: "11.7"
+          #   catalog: "publicrelease"
+          # - macos_version: "21H1123"
+          #   macos_name: "monterey"
+          #   macos_version_number: "12.6"
+          #   catalog: "publicrelease"
+          # - macos_version: "22H313"
+          #   macos_name: "ventura"
+          #   macos_version_number: "13"
+          #   catalog: "publicrelease"
+          # - macos_version: "23H311"
+          #   macos_name: "sonoma"
+          #   macos_version_number: "14"
+          #   catalog: "publicrelease"
+          # - macos_version: "24C101"
+          #   macos_name: "sequoia"
+          #   macos_version_number: "15"
+          #   catalog: "publicrelease"
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          brew install coreutils wget sshpass
+          pip install requests pyyaml
+      - name: Clone gibMacOS
+        run: |
+          git clone https://github.com/corpnewt/gibMacOS.git
+          cd gibMacOS
+          chmod +x gibMacOS.command
+      - name: Download macOS components
+        working-directory: ${{ github.workspace }}/gibMacOS
+        run: |
+          python3 gibMacOS.py --catalog ${{ matrix.catalog }} \
+                             --maxos ${{ matrix.macos_version_number }} \
+                             --version ${{ matrix.macos_version_number }} \
+                             -b ${{ matrix.macos_version }} \
+      - name: Verify download
+        working-directory: ${{ github.workspace }}/gibMacOS
+        run: |
+          DOWNLOAD_DIR=$(find "${{ github.workspace }}/gibMacOS/macOS Downloads" -type d -name "*${{ matrix.macos_version }}*" | head -n 1)
+          echo "Downloaded files in $DOWNLOAD_DIR:"
+          ls -la "$DOWNLOAD_DIR"
+          if [ -z "$DOWNLOAD_DIR" ] || [ ! -d "$DOWNLOAD_DIR" ]; then
+            echo "Error: Download directory not found"
+            exit 1
+          fi
+          PKG_COUNT=$(find "$DOWNLOAD_DIR" -name "*.pkg" | wc -l)
+          echo "Found $PKG_COUNT pkg files"
+          if [ "$PKG_COUNT" -lt 1 ]; then
+            echo "Error: No pkg files found in download directory"
+            exit 1
+          fi
+          echo "DOWNLOAD_DIR=$DOWNLOAD_DIR" >> $GITHUB_ENV
+      - name: Create Full Install Image
+        working-directory: ${{ github.workspace }}/gibMacOS
+        run: |
+          mkdir -p "${{ github.workspace }}/output"
+          if [[ "${{ matrix.macos_version_number }}" == "11"* || "${{ matrix.macos_version_number }}" == "12"* || "${{ matrix.macos_version_number }}" == "13"* || "${{ matrix.macos_version_number }}" == "14"* || "${{ matrix.macos_version_number }}" == "15"* ]]; then
+            echo "Processing macOS >= 11 (Big Sur and newer)"
+            INSTALLER_PKG=$(find "$DOWNLOAD_DIR" -name "InstallAssistant*.pkg" | head -n 1)
+            if [ -z "$INSTALLER_PKG" ]; then
+              echo "Error: InstallAssistant.pkg not found"
+              exit 1
+            fi
+            echo "Found installer package: $INSTALLER_PKG"
+            TEMP_DIR="${{ github.workspace }}/temp_extract"
+            mkdir -p "$TEMP_DIR"
+            echo "Extracting package to $TEMP_DIR"
+            pkgutil --expand "$INSTALLER_PKG" "$TEMP_DIR"
+            PAYLOAD_DIR="${{ github.workspace }}/payload"
+            mkdir -p "$PAYLOAD_DIR"
+            echo "Extracting payload"
+            if [ -f "$TEMP_DIR/Payload" ]; then
+              cd "$PAYLOAD_DIR"
+              cat "$TEMP_DIR/Payload" | gunzip -dc | cpio -i
+            else
+              for payload in "$TEMP_DIR"/*.pkg/Payload; do
+                if [ -f "$payload" ]; then
+                  cd "$PAYLOAD_DIR"
+                  cat "$payload" | gunzip -dc | cpio -i
+                fi
+              done
+            fi
+            INSTALLER_APP=$(find "$PAYLOAD_DIR" -type d -name "Install*.app" | head -n 1)
+            if [ -z "$INSTALLER_APP" ]; then
+              echo "Error: macOS Installer app not found"
+              ls -la "$PAYLOAD_DIR"
+              exit 1
+            fi
+            echo "Found installer app: $INSTALLER_APP"
+            DMG_FILE="${{ github.workspace }}/output/${{ matrix.macos_name }}_full.dmg"
+            DMG_SIZE=16g
+            echo "Creating DMG file: $DMG_FILE"
+            hdiutil create -size $DMG_SIZE -layout SPUD -fs HFS+J -type SPARSE -volname "macOS_Install" -o "${{ github.workspace }}/temp_image"
+            MOUNT_POINT=$(hdiutil attach "${{ github.workspace }}/temp_image.sparseimage" -nobrowse -noverify -noautoopen | tail -n 1 | awk '{print $3}')
+            echo "Mounted DMG at: $MOUNT_POINT"
+            echo "Running createinstallmedia..."
+            sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "$MOUNT_POINT" --nointeraction
+            sleep 5
+            echo "Unmounting volume..."
+            echo "Listing all volumes:"
+            ls -la /Volumes/
+            echo "Searching for Install macOS volumes..."
+            for vol in $(ls -1 /Volumes/ | grep "Install macOS"); do
+              echo "Trying to unmount /Volumes/$vol"
+              diskutil unmount "/Volumes/$vol" 2>/dev/null || true
+            done
+            echo "Trying to unmount original mount point: $MOUNT_POINT"
+            diskutil unmount "$MOUNT_POINT" 2>/dev/null || true
+            echo "Checking for any remaining volumes..."
+            DISK_IDS=$(diskutil list | grep "Install macOS" | awk '{print $1}' | grep "disk" || echo "")
+            if [ -n "$DISK_IDS" ]; then
+              echo "Found remaining disks, forcing detach..."
+              for DISK_ID in $DISK_IDS; do
+                echo "Force detaching $DISK_ID"
+                diskutil unmountDisk force $DISK_ID || true
+              done
+            fi
+            echo "Waiting for resources to be freed..."
+            sleep 10
+            echo "Converting sparse image to DMG..."
+            hdiutil convert "${{ github.workspace }}/temp_image.sparseimage" -format UDZO -o "$DMG_FILE"
+            rm -f "${{ github.workspace }}/temp_image.sparseimage"
+          else
+            echo "Processing macOS <= 10.15 (Catalina and older)"
+            rm -rf "${{ github.workspace }}/BuildmacOSInstallApp.py"
+            wget https://raw.githubusercontent.com/oneclickvirt/macos/refs/heads/main/BuildmacOSInstallApp.py -O "${{ github.workspace }}/BuildmacOSInstallApp.py" 
+            chmod +x "${{ github.workspace }}/BuildmacOSInstallApp.py"
+            python3 "${{ github.workspace }}/BuildmacOSInstallApp.py" "$DOWNLOAD_DIR" "${{ github.workspace }}/installer_app"
+            if [ $? -ne 0 ]; then
+              echo "Error: Failed to build installer app"
+              exit 1
+            fi
+            INSTALLER_APP=$(find "${{ github.workspace }}/installer_app" -type d -name "Install*.app" | head -n 1)
+            if [ -z "$INSTALLER_APP" ]; then
+              echo "Error: macOS Installer app not found"
+              exit 1
+            fi
+            echo "Found installer app: $INSTALLER_APP"
+            DMG_FILE="${{ github.workspace }}/output/${{ matrix.macos_name }}_full.dmg"
+            DMG_SIZE=10g
+            echo "Creating DMG file: $DMG_FILE"
+            hdiutil create -size $DMG_SIZE -layout SPUD -fs HFS+J -type SPARSE -volname "macOS_Install" -o "${{ github.workspace }}/temp_image"
+            ATTACH_OUTPUT=$(hdiutil attach "${{ github.workspace }}/temp_image.sparseimage" -nobrowse -noverify -noautoopen)
+            MOUNT_POINT=$(echo "$ATTACH_OUTPUT" | tail -n 1 | awk '{print $3}')
+            DISK_DEV=$(echo "$ATTACH_OUTPUT" | head -n 1 | awk '{print $1}')
+            echo "Mounted DMG at: $MOUNT_POINT (Disk: $DISK_DEV)"
+            echo "Running createinstallmedia..."
+            sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume "$MOUNT_POINT" --applicationpath "$INSTALLER_APP" --nointeraction
+            sleep 5
+            echo "Unmounting volumes..."
+            echo "Listing all volumes:"
+            ls -la /Volumes/
+            echo "Trying to unmount original mount point: $MOUNT_POINT"
+            diskutil unmount "$MOUNT_POINT" 2>/dev/null || true
+            for vol in $(ls -1 /Volumes/ | grep "Install macOS"); do
+              echo "Trying to unmount /Volumes/$vol"
+              diskutil unmount "/Volumes/$vol" 2>/dev/null || true
+            done
+            echo "Ensuring no open file handles on sparseimage..."
+            for i in {1..5}; do
+              LSOF_OUTPUT=$(lsof | grep temp_image.sparseimage || true)
+              if [ -z "$LSOF_OUTPUT" ]; then
+                echo "No processes holding sparseimage."
+                break
+              else
+                echo "Sparseimage is still in use, waiting... (attempt $i)"
+                echo "$LSOF_OUTPUT"
+                sleep 60
+              fi
+            done
+            echo "Detaching disk: $DISK_DEV"
+            for i in {1..5}; do
+              hdiutil detach "$DISK_DEV" && break
+              echo "Detach attempt $i failed, retrying in 10s..."
+              sleep 15
+            done
+            echo "Converting sparse image to DMG..."
+            hdiutil convert "${{ github.workspace }}/temp_image.sparseimage" -format UDZO -o "$DMG_FILE" || {
+              echo "First conversion attempt failed, retrying after 30s..."
+              sleep 30
+              hdiutil convert "${{ github.workspace }}/temp_image.sparseimage" -format UDZO -o "$DMG_FILE"
+            }
+            if [ -f "$DMG_FILE" ]; then
+              rm -f "${{ github.workspace }}/temp_image.sparseimage"
+            else
+              echo "Warning: DMG conversion failed, keeping sparse image"
+            fi
+          fi
+
+      - name: List Output
+        run: |
+          ls -lah ${{ github.workspace }}/output/
+          if [ ! -f "${{ github.workspace }}/output/${{ matrix.macos_name }}_full.dmg" ]; then
+            echo "Error: Full DMG file not found!"
+            exit 1
+          fi
+          echo "Successfully created ${{ matrix.macos_name }}_full.dmg"
+    
+      - name: Upload via SCP
+        working-directory: ${{ github.workspace }}
+        run: |
+          MACOS_NAME="${{ matrix.macos_name }}"
+          MACOS_VERSION="${{ matrix.macos_version }}"
+          DMG_FILE="${{ github.workspace }}/output/${MACOS_NAME}_full.dmg"
+          if [ ! -f "$DMG_FILE" ]; then
+            echo "Error: Output file not found at $DMG_FILE"
+            exit 1
+          fi
+          
+          echo "Creating destination directory on remote server"
+          # Create directory with proper permissions (avoiding "No such file or directory" errors)
+          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "mkdir -p /root/macOS-images/${MACOS_NAME}"
+          
+          echo "Uploading $DMG_FILE to remote server"
+          # Using sshpass to provide password non-interactively
+          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no "$DMG_FILE" root@${{ secrets.IP }}:/root/macOS-images/${MACOS_NAME}/
+          
+          # Verify upload
+          echo "Verifying uploaded file"
+          sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "ls -lah /root/macOS-images/${MACOS_NAME}/ && echo 'Upload successful!'"
