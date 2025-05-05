@@ -118,6 +118,6 @@ jobs:
       - name: Upload compressed archive via SCP
         run: |
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "mkdir -p /root/macos"
-          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no output/${{ matrix.macos_name }}.7z root@${{ secrets.IP }}:/root/macos/
+          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no output/${{ matrix.macos_name }}.iso.7z root@${{ secrets.IP }}:/root/macos/
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "ls -lah /root/macos/"
 
