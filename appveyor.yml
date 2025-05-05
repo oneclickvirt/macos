@@ -1,41 +1,54 @@
 image: macos-sonoma
+
 environment:
   matrix:
-    # - MACOS_VERSION_CODE: "20G1427"
-    #   MACOS_NAME: "big‑sur"
-    #   MACOS_DISPLAY_NAME: "Big Sur"
-    #   MACOS_VERSION_NUMBER: "11"
-    #   CATALOG: "publicrelease"
-    # - MACOS_VERSION_CODE: "21H1123"
-    #   MACOS_NAME: "monterey"
-    #   MACOS_DISPLAY_NAME: "Monterey"
-    #   MACOS_VERSION_NUMBER: "12"
-    #   CATALOG: "publicrelease"
-    # - MACOS_VERSION_CODE: "22H313"
-    #   MACOS_NAME: "ventura"
-    #   MACOS_DISPLAY_NAME: "Ventura"
-    #   MACOS_VERSION_NUMBER: "13"
-    #   CATALOG: "publicrelease"
+    - MACOS_VERSION_CODE: "20G1427"
+      MACOS_NAME: "big‑sur"
+      MACOS_DISPLAY_NAME: "Big Sur"
+      MACOS_VERSION_NUMBER: "11"
+      CATALOG: "publicrelease"
+      IMAGE_SIZE: "12288m"
+    - MACOS_VERSION_CODE: "21H1123"
+      MACOS_NAME: "monterey"
+      MACOS_DISPLAY_NAME: "Monterey"
+      MACOS_VERSION_NUMBER: "12"
+      CATALOG: "publicrelease"
+      IMAGE_SIZE: "12288m"
+    - MACOS_VERSION_CODE: "22H313"
+      MACOS_NAME: "ventura"
+      MACOS_DISPLAY_NAME: "Ventura"
+      MACOS_VERSION_NUMBER: "13"
+      CATALOG: "publicrelease"
+      IMAGE_SIZE: "12288m"
     - MACOS_VERSION_CODE: "23H311"
       MACOS_NAME: "sonoma"
       MACOS_DISPLAY_NAME: "Sonoma"
       MACOS_VERSION_NUMBER: "14"
       CATALOG: "publicrelease"
+      IMAGE_SIZE: "12288m"
     - MACOS_VERSION_CODE: "24C101"
       MACOS_NAME: "sequoia"
       MACOS_DISPLAY_NAME: "Sequoia"
       MACOS_VERSION_NUMBER: "15"
       CATALOG: "publicrelease"
+      IMAGE_SIZE: "12288m"
+
 matrix:
   fast_finish: false
+
 build_script:
+  # 更新包管理器并安装依赖
   - brew update
   - brew install sshpass
+
+  # 克隆并准备 gibMacOS
   - git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
   - chmod +x gibMacOS/gibMacOS.command
   - cd gibMacOS
   - python3 gibMacOS.py --catalog "$CATALOG" --version "$MACOS_VERSION_NUMBER" -b "$MACOS_VERSION_CODE"
   - cd ..
+
+  # 安装 macOS InstallAssistant.pkg
   - |
     DOWNLOAD_DIR=$(find "$PWD/gibMacOS/macOS Downloads" -type d -name "*$MACOS_VERSION_CODE*" | head -n1)
     if [ -z "$DOWNLOAD_DIR" ]; then
@@ -48,30 +61,19 @@ build_script:
     if [ ! -d "$APP" ]; then
       echo "Error: $APP not found"; exit 1
     fi
-  # - |
-  #   DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
-  #   DOWNLOAD_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 + 2 ))
-  #   IMAGE_SIZE="${DOWNLOAD_GB}g"
-  #   echo "Creating sparse image of size $IMAGE_SIZE …"
-  #   hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE -volname "Install_$MACOS_NAME" -o temp_install.sparseimage
-  - echo "Checking download size…"
-  - DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
-  - START_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 ))
-  - INCREMENT_MB=512
-  - CURRENT_MB=$(( START_GB * 1024 + INCREMENT_MB ))
+
+  # 创建稀疏映像，大小由 IMAGE_SIZE 环境变量指定
   - |
-    while true; do
-      IMAGE_SIZE="${CURRENT_MB}m"
-      echo "Trying to create sparse image of size $IMAGE_SIZE …"
-      hdiutil create -size "$IMAGE_SIZE" -layout GPTSPUD -fs HFS+J -type SPARSE -volname "Install_$MACOS_NAME" -o temp_install.sparseimage 2>/dev/null
-      if [ $? -eq 0 ]; then
-        echo "Sparse image created successfully with size $IMAGE_SIZE"
-        break
-      else
-        echo "Failed to create image with size $IMAGE_SIZE, increasing size…"
-        CURRENT_MB=$(( CURRENT_MB + INCREMENT_MB ))
-      fi
-    done
+    echo "Creating sparse image of size $IMAGE_SIZE …"
+    hdiutil create \
+      -size "$IMAGE_SIZE" \
+      -layout GPTSPUD \
+      -fs HFS+J \
+      -type SPARSE \
+      -volname "Install_$MACOS_NAME" \
+      -o temp_install.sparseimage
+
+  # 挂载稀疏映像并记录设备和挂载点信息
   - |
     ATTACH_OUT=$(hdiutil attach temp_install.sparseimage \
       -nobrowse -noverify -noautoopen -readwrite)
@@ -86,39 +88,46 @@ build_script:
     EFI_MNT=$(echo "$ATTACH_OUT" | awk '/EFI$/ {print $3}')
     INST_DEV=$(echo "$ATTACH_OUT" | grep "Install_$MACOS_NAME" | awk '{print $1}')
     echo "安装设备: $INST_DEV"
+
+  # 在映像上运行 createinstallmedia
   - |
     sudo "$APP/Contents/Resources/createinstallmedia" \
       --volume "$ACTUAL_INSTALL_VOL" --nointeraction --downloadassets
-  - |
-    diskutil mount "$EFI_DEV" || true
-    if [ -d "$EFI_MNT" ]; then
-      # 检查 EFI 目录是否存在
-      if [ -d "EFI" ]; then
-        sudo cp -R EFI/* "$EFI_MNT/"
-      else
-        echo "警告: EFI 目录不存在，跳过 EFI 注入"
-      fi
-      diskutil unmount "$EFI_DEV" || true
-    else
-      echo "警告: EFI 分区未挂载成功，跳过 EFI 注入"
-    fi
-  - |
-    sleep 5
-    diskutil list
-    echo "尝试卸载分区..."
-    hdiutil detach "$INST_DEV" -force || true
-    if [ ! -z "$EFI_DEV" ]; then
-      hdiutil detach "$EFI_DEV" -force || true
-    fi
-    sleep 2
-  - |
-    mkdir -p output
-    hdiutil convert temp_install.sparseimage \
-      -format UDTO -o output/$MACOS_NAME.cdr
-    mv output/$MACOS_NAME.cdr output/$MACOS_NAME.iso
-  - ssh-keygen -R "$IP"
-  - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@"$IP" "mkdir -p /root/macos && exit"
-  - sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "output/$MACOS_NAME.iso" root@"$IP":/root/macos/
-  - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@"$IP" "ls -lah /root/macos/"
 
+  # # 将自定义 EFI 注入映像（可选）
+  # - |
+  #   diskutil mount "$EFI_DEV" || true
+  #   if [ -d "$EFI_MNT" ]; then
+  #     if [ -d "EFI" ]; then
+  #       sudo cp -R EFI/* "$EFI_MNT/"
+  #     else
+  #       echo "警告: EFI 目录不存在，跳过 EFI 注入"
+  #     fi
+  #     diskutil unmount "$EFI_DEV" || true
+  #   else
+  #     echo "警告: EFI 分区未挂载成功，跳过 EFI 注入"
+  #   fi
 
+  # # 卸载映像设备
+  # - |
+  #   sleep 5
+  #   diskutil list
+  #   echo "尝试卸载分区..."
+  #   hdiutil detach "$INST_DEV" -force || true
+  #   if [ ! -z "$EFI_DEV" ]; then
+  #     hdiutil detach "$EFI_DEV" -force || true
+  #   fi
+  #   sleep 2
+
+  # # 转换为 ISO
+  # - |
+  #   mkdir -p output
+  #   hdiutil convert temp_install.sparseimage \
+  #     -format UDTO -o output/$MACOS_NAME.cdr
+  #   mv output/$MACOS_NAME.cdr output/$MACOS_NAME.iso
+
+  # # 通过 SSH 上传到目标机器
+  # - ssh-keygen -R "$IP"
+  # - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@"$IP" "mkdir -p /root/macos && exit"
+  # - sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "output/$MACOS_NAME.iso" root@"$IP":/root/macos/
+  # - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@"$IP" "ls -lah /root/macos/"
