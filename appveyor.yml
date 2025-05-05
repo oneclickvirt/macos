@@ -31,7 +31,7 @@ environment:
       MACOS_DISPLAY_NAME: "Sequoia"
       MACOS_VERSION_NUMBER: "15"
       CATALOG: "publicrelease"
-      IMAGE_SIZE: "15700m"
+      IMAGE_SIZE: "17200m"
 
 matrix:
   fast_finish: true
