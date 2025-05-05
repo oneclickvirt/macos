@@ -25,7 +25,7 @@ jobs:
             macos_name: "catalina"
             macos_version_number: "10.15"
             catalog: "publicrelease"
-            image_size: "7600m"
+            image_size: "7800m"
 
     steps:
       - name: Checkout code
