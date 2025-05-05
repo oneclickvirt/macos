@@ -37,18 +37,13 @@ matrix:
   fast_finish: true
 
 build_script:
-  # 更新包管理器并安装依赖
   - brew update
   - brew install sshpass
-
-  # 克隆并准备 gibMacOS
   - git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
   - chmod +x gibMacOS/gibMacOS.command
   - cd gibMacOS
   - python3 gibMacOS.py --catalog "$CATALOG" --version "$MACOS_VERSION_NUMBER" -b "$MACOS_VERSION_CODE"
   - cd ..
-
-  # 安装 macOS InstallAssistant.pkg
   - |
     DOWNLOAD_DIR=$(find "$PWD/gibMacOS/macOS Downloads" -type d -name "*$MACOS_VERSION_CODE*" | head -n1)
     if [ -z "$DOWNLOAD_DIR" ]; then
@@ -61,8 +56,6 @@ build_script:
     if [ ! -d "$APP" ]; then
       echo "Error: $APP not found"; exit 1
     fi
-
-  # 创建稀疏映像，大小由 IMAGE_SIZE 环境变量指定
   - |
     echo "Creating sparse image of size $IMAGE_SIZE …"
     hdiutil create \
@@ -72,8 +65,6 @@ build_script:
       -type SPARSE \
       -volname "Install_$MACOS_NAME" \
       -o temp_install.sparseimage
-
-  # 挂载稀疏映像并记录设备和挂载点信息
   - |
     ATTACH_OUT=$(hdiutil attach temp_install.sparseimage \
       -nobrowse -noverify -noautoopen -readwrite)
@@ -88,13 +79,9 @@ build_script:
     EFI_MNT=$(echo "$ATTACH_OUT" | awk '/EFI$/ {print $3}')
     INST_DEV=$(echo "$ATTACH_OUT" | grep "Install_$MACOS_NAME" | awk '{print $1}')
     echo "安装设备: $INST_DEV"
-
-  # 在映像上运行 createinstallmedia
   - |
     sudo "$APP/Contents/Resources/createinstallmedia" \
       --volume "$ACTUAL_INSTALL_VOL" --nointeraction --downloadassets
-
-  # 将自定义 EFI 注入映像（可选）
   - |
     diskutil mount "$EFI_DEV" || true
     if [ -d "$EFI_MNT" ]; then
@@ -107,8 +94,6 @@ build_script:
     else
       echo "警告: EFI 分区未挂载成功，跳过 EFI 注入"
     fi
-
-  # 卸载映像设备
   - |
     sleep 5
     diskutil list
@@ -118,15 +103,11 @@ build_script:
       hdiutil detach "$EFI_DEV" -force || true
     fi
     sleep 2
-
-  # 转换为 ISO
   - |
     mkdir -p output
     hdiutil convert temp_install.sparseimage \
       -format UDTO -o output/$MACOS_NAME.cdr
     mv output/$MACOS_NAME.cdr output/$MACOS_NAME.iso
-
-  # 通过 SSH 上传到目标机器
   - ssh-keygen -R "$IP"
   - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@"$IP" "mkdir -p /root/macos && exit"
   - sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "output/$MACOS_NAME.iso" root@"$IP":/root/macos/
