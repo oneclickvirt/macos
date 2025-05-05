@@ -1,7 +1,4 @@
 image: macos-sonoma
-skip_commits:
-  files:
-    - '**/*'
 only_commits:
   files:
     - appveyor.yml
