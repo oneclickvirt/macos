@@ -7,7 +7,7 @@ jobs:
   build_iso:
     runs-on: macos-latest
     strategy:
-      fail-fast: false
+      fail-fast: true
       max-parallel: 1
       matrix:
         include:
@@ -15,14 +15,17 @@ jobs:
             macos_name: "high-sierra"
             macos_version_number: "10.13"
             catalog: "publicrelease"
+            image_size: "5000m"
           - macos_version: "18F2059"
             macos_name: "mojave"
             macos_version_number: "10.14"
             catalog: "publicrelease"
+            image_size: "6000m"
           - macos_version: "19D2064"
             macos_name: "catalina"
             macos_version_number: "10.15"
             catalog: "publicrelease"
+            image_size: "6000m"
 
     steps:
       - name: Checkout code
@@ -55,7 +58,6 @@ jobs:
         run: |
           MAJOR=$(echo "${{ matrix.macos_version_number }}" | cut -d. -f1)
           if [ "$MAJOR" -lt 11 ]; then
-            # macOS 10.x：已自带 Install*.app
             APP=$(find "$DOWNLOAD_DIR" -maxdepth 2 -type d -name "Install*.app" | head -n1)
             if [ -z "$APP" ]; then
               echo "Error: installer.app not found in $DOWNLOAD_DIR"
@@ -71,11 +73,9 @@ jobs:
           ls -la "$INSTALLER_APP"
           echo "INSTALLER_APP=$INSTALLER_APP" >> $GITHUB_ENV
 
-      - name: Create sparse image with dynamic size
+      - name: Create sparse image with manual size
         run: |
-          DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
-          DOWNLOAD_SIZE_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 ))
-          IMAGE_SIZE="${DOWNLOAD_SIZE_GB}g"
+          IMAGE_SIZE="${{ matrix.image_size }}"
           echo "Creating sparse image with size: $IMAGE_SIZE"
           hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE \
             -volname "Install_${{ matrix.macos_name }}" \
