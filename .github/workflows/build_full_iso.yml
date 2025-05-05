@@ -15,7 +15,7 @@ jobs:
             macos_name: "high-sierra"
             macos_version_number: "10.13"
             catalog: "publicrelease"
-            image_size: "5000m"
+            image_size: "5500m"
           - macos_version: "18F2059"
             macos_name: "mojave"
             macos_version_number: "10.14"
