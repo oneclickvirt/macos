@@ -33,7 +33,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install wget sshpass
+          brew install wget sshpass p7zip
 
       - name: Clone gibMacOS
         run: |
@@ -56,28 +56,17 @@ jobs:
 
       - name: Prepare installer app
         run: |
-          MAJOR=$(echo "${{ matrix.macos_version_number }}" | cut -d. -f1)
-          if [ "$MAJOR" -lt 11 ]; then
-            APP=$(find "$DOWNLOAD_DIR" -maxdepth 2 -type d -name "Install*.app" | head -n1)
-            if [ -z "$APP" ]; then
-              echo "Error: installer.app not found in $DOWNLOAD_DIR"
-              exit 1
-            fi
-            INSTALLER_APP="$APP"
-          fi
-          if [ ! -d "$INSTALLER_APP" ]; then
-            echo "Error: 安装应用程序路径无效: $INSTALLER_APP"
-            exit 1
-          fi
-          echo "找到安装应用程序: $INSTALLER_APP"
-          ls -la "$INSTALLER_APP"
+          wget https://raw.githubusercontent.com/oneclickvirt/macos/main/BuildmacOSInstallApp.py -O BuildmacOSInstallApp.py
+          chmod +x BuildmacOSInstallApp.py
+          python3 BuildmacOSInstallApp.py "$DOWNLOAD_DIR" installer_app
+          APP=$(find installer_app -maxdepth 2 -type d -name "Install*.app" | head -n1)
+          if [ -z "$APP" ]; then echo "Error: built installer.app not found"; exit 1; fi
+          INSTALLER_APP="$PWD/$APP"
           echo "INSTALLER_APP=$INSTALLER_APP" >> $GITHUB_ENV
 
-      - name: Create sparse image with manual size
+      - name: Create sparse image
         run: |
-          IMAGE_SIZE="${{ matrix.image_size }}"
-          echo "Creating sparse image with size: $IMAGE_SIZE"
-          hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE \
+          hdiutil create -size "${{ matrix.image_size }}" -layout GPTSPUD -fs HFS+J -type SPARSE \
             -volname "Install_${{ matrix.macos_name }}" \
             -o temp_install.sparseimage
 
@@ -104,10 +93,8 @@ jobs:
 
       - name: Inject OpenCore EFI
         run: |
-          echo "Mounting EFI partition $EFI_DEV"
           diskutil mount "$EFI_DEV"
           EFI_MNT_POINT=$(mount | grep "$EFI_DEV" | awk '{print $3}')
-          echo "Copying OpenCore EFI to $EFI_MNT_POINT"
           sudo cp -R EFI/* "$EFI_MNT_POINT/"
           diskutil unmount "$EFI_MNT_POINT" || true
 
@@ -119,35 +106,19 @@ jobs:
       - name: Create hybrid ISO
         run: |
           mkdir -p output
-          sleep 30
-          hdiutil convert temp_install.sparseimage -format UDTO -o output/${{ matrix.macos_name }}.cdr
           sleep 20
+          hdiutil convert temp_install.sparseimage -format UDTO -o output/${{ matrix.macos_name }}.cdr
           mv output/${{ matrix.macos_name }}.cdr output/${{ matrix.macos_name }}.iso
-
-      - name: List output
-        run: |
-          ls -lah output/
-
-      - name: Install 7-Zip
-        run: |
-          brew install p7zip
 
       - name: Compress ISO with 7z (max compression)
         run: |
-          ISO_PATH=output/${{ matrix.macos_name }}.iso
-          COMPRESSED_PATH=${ISO_PATH}.7z
-          echo "Compressing $ISO_PATH to $COMPRESSED_PATH"
-          7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on -md=256m "$COMPRESSED_PATH" "$ISO_PATH"
-          echo "Compression complete."
-          ls -lh "$COMPRESSED_PATH"
+          7z a -t7z -mx=9 output/${{ matrix.macos_name }}.7z output/${{ matrix.macos_name }}.iso
+          # 可选删除原始 ISO
+          rm output/${{ matrix.macos_name }}.iso
 
-      - name: Verify ISO integrity after compression
+      - name: Upload compressed archive via SCP
         run: |
-          7z t output/${{ matrix.macos_name }}.iso.7z
-
-      - name: Upload via SCP to /root/macos
-        run: |
-          ISO_7Z=output/${{ matrix.macos_name }}.iso.7z
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "mkdir -p /root/macos"
-          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no "$ISO_7Z" root@${{ secrets.IP }}:/root/macos/
+          sshpass -p "${{ secrets.PASSWORD }}" scp -o StrictHostKeyChecking=no output/${{ matrix.macos_name }}.7z root@${{ secrets.IP }}:/root/macos/
           sshpass -p "${{ secrets.PASSWORD }}" ssh -o StrictHostKeyChecking=no root@${{ secrets.IP }} "ls -lah /root/macos/"
+
