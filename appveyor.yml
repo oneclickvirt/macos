@@ -1,5 +1,10 @@
 image: macos-sonoma
-
+skip_commits:
+  files:
+    - '**/*'
+only_commits:
+  files:
+    - appveyor.yml
 environment:
   matrix:
     # - MACOS_VERSION_CODE: "20G1427"
