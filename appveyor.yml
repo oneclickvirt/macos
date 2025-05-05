@@ -34,7 +34,7 @@ environment:
       IMAGE_SIZE: "12288m"
 
 matrix:
-  fast_finish: false
+  fast_finish: true
 
 build_script:
   # 更新包管理器并安装依赖
