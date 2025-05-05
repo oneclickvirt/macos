@@ -16,16 +16,16 @@ jobs:
           #   macos_version_number: "10.13"
           #   catalog: "publicrelease"
           #   image_size: "5500m"
-          - macos_version: "18F2059"
-            macos_name: "mojave"
-            macos_version_number: "10.14"
-            catalog: "publicrelease"
-            image_size: "6400m"
+          # - macos_version: "18F2059"
+          #   macos_name: "mojave"
+          #   macos_version_number: "10.14"
+          #   catalog: "publicrelease"
+          #   image_size: "6400m"
           - macos_version: "19D2064"
             macos_name: "catalina"
             macos_version_number: "10.15"
             catalog: "publicrelease"
-            image_size: "6400m"
+            image_size: "6500m"
 
     steps:
       - name: Checkout code
