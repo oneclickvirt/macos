@@ -1,21 +1,21 @@
 image: macos-sonoma
 environment:
   matrix:
-    - MACOS_VERSION_CODE: "20G1427"
-      MACOS_NAME: "big‑sur"
-      MACOS_DISPLAY_NAME: "Big Sur"
-      MACOS_VERSION_NUMBER: "11"
-      CATALOG: "publicrelease"
-    - MACOS_VERSION_CODE: "21H1123"
-      MACOS_NAME: "monterey"
-      MACOS_DISPLAY_NAME: "Monterey"
-      MACOS_VERSION_NUMBER: "12"
-      CATALOG: "publicrelease"
-    - MACOS_VERSION_CODE: "22H313"
-      MACOS_NAME: "ventura"
-      MACOS_DISPLAY_NAME: "Ventura"
-      MACOS_VERSION_NUMBER: "13"
-      CATALOG: "publicrelease"
+    # - MACOS_VERSION_CODE: "20G1427"
+    #   MACOS_NAME: "big‑sur"
+    #   MACOS_DISPLAY_NAME: "Big Sur"
+    #   MACOS_VERSION_NUMBER: "11"
+    #   CATALOG: "publicrelease"
+    # - MACOS_VERSION_CODE: "21H1123"
+    #   MACOS_NAME: "monterey"
+    #   MACOS_DISPLAY_NAME: "Monterey"
+    #   MACOS_VERSION_NUMBER: "12"
+    #   CATALOG: "publicrelease"
+    # - MACOS_VERSION_CODE: "22H313"
+    #   MACOS_NAME: "ventura"
+    #   MACOS_DISPLAY_NAME: "Ventura"
+    #   MACOS_VERSION_NUMBER: "13"
+    #   CATALOG: "publicrelease"
     - MACOS_VERSION_CODE: "23H311"
       MACOS_NAME: "sonoma"
       MACOS_DISPLAY_NAME: "Sonoma"
@@ -48,12 +48,30 @@ build_script:
     if [ ! -d "$APP" ]; then
       echo "Error: $APP not found"; exit 1
     fi
+  # - |
+  #   DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
+  #   DOWNLOAD_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 + 2 ))
+  #   IMAGE_SIZE="${DOWNLOAD_GB}g"
+  #   echo "Creating sparse image of size $IMAGE_SIZE …"
+  #   hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE -volname "Install_$MACOS_NAME" -o temp_install.sparseimage
+  - echo "Checking download size…"
+  - DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
+  - START_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 ))
+  - INCREMENT_MB=512
+  - CURRENT_MB=$(( START_GB * 1024 + INCREMENT_MB ))
   - |
-    DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
-    DOWNLOAD_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 + 2 ))
-    IMAGE_SIZE="${DOWNLOAD_GB}g"
-    echo "Creating sparse image of size $IMAGE_SIZE …"
-    hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE -volname "Install_$MACOS_NAME" -o temp_install.sparseimage
+    while true; do
+      IMAGE_SIZE="${CURRENT_MB}m"
+      echo "Trying to create sparse image of size $IMAGE_SIZE …"
+      hdiutil create -size "$IMAGE_SIZE" -layout GPTSPUD -fs HFS+J -type SPARSE -volname "Install_$MACOS_NAME" -o temp_install.sparseimage 2>/dev/null
+      if [ $? -eq 0 ]; then
+        echo "Sparse image created successfully with size $IMAGE_SIZE"
+        break
+      else
+        echo "Failed to create image with size $IMAGE_SIZE, increasing size…"
+        CURRENT_MB=$(( CURRENT_MB + INCREMENT_MB ))
+      fi
+    done
   - |
     ATTACH_OUT=$(hdiutil attach temp_install.sparseimage \
       -nobrowse -noverify -noautoopen -readwrite)
