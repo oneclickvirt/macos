@@ -1,5 +1,4 @@
 image: macos-sonoma
-# 2. 定义环境变量矩阵：每一行对应一个并行作业，注入不同 macOS 参数
 environment:
   matrix:
     - MACOS_VERSION_CODE: "20G1427"
@@ -27,27 +26,21 @@ environment:
       MACOS_DISPLAY_NAME: "Sequoia"
       MACOS_VERSION_NUMBER: "15"
       CATALOG: "publicrelease"
-# 3. 控制失败策略：false 表示即便某个作业失败，也会等待其他作业完成（可根据需要设 true）
 matrix:
   fast_finish: false
-# 4. 构建脚本：按矩阵变量顺序执行完整的打包流程
 build_script:
-  # 安装基础依赖
   - brew update
   - brew install sshpass
-  # 克隆并下载 macOS 安装组件
   - git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
   - chmod +x gibMacOS/gibMacOS.command
   - cd gibMacOS
   - python3 gibMacOS.py --catalog "$CATALOG" --version "$MACOS_VERSION_NUMBER" -b "$MACOS_VERSION_CODE"
   - cd ..
-  # 定位下载目录
   - |
     DOWNLOAD_DIR=$(find "$PWD/gibMacOS/macOS Downloads" -type d -name "*$MACOS_VERSION_CODE*" | head -n1)
     if [ -z "$DOWNLOAD_DIR" ]; then
       echo "Error: download dir not found"; exit 1
     fi
-  # 安装 InstallAssistant.pkg 到 /Applications
   - |
     PKG=$(find "$DOWNLOAD_DIR" -maxdepth 1 -name "InstallAssistant.pkg" | head -n1)
     sudo installer -pkg "$PKG" -target /Applications
@@ -55,39 +48,29 @@ build_script:
     if [ ! -d "$APP" ]; then
       echo "Error: $APP not found"; exit 1
     fi
-  # 创建稀疏镜像
   - |
     DOWNLOAD_SIZE=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
     DOWNLOAD_GB=$(( (DOWNLOAD_SIZE + 1048576) / 1048576 + 2 ))
     IMAGE_SIZE="${DOWNLOAD_GB}g"
     echo "Creating sparse image of size $IMAGE_SIZE …"
     hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE -volname "Install_$MACOS_NAME" -o temp_install.sparseimage
-  # 挂载镜像（可读写）并显示挂载信息
   - |
     ATTACH_OUT=$(hdiutil attach temp_install.sparseimage \
       -nobrowse -noverify -noautoopen -readwrite)
     echo "挂载信息: $ATTACH_OUT"
-  
-  # 解析设备与挂载点
   - |
-    # 获取实际挂载的卷名
     ACTUAL_INSTALL_VOL=$(echo "$ATTACH_OUT" | grep "Install_$MACOS_NAME" | awk '{print $3}')
     if [ -z "$ACTUAL_INSTALL_VOL" ]; then
       echo "Error: 无法找到安装卷挂载点"; exit 1
     fi
     echo "实际挂载点: $ACTUAL_INSTALL_VOL"
-    
     EFI_DEV=$(echo "$ATTACH_OUT" | awk '/EFI$/ {print $1}')
     EFI_MNT=$(echo "$ATTACH_OUT" | awk '/EFI$/ {print $3}')
     INST_DEV=$(echo "$ATTACH_OUT" | grep "Install_$MACOS_NAME" | awk '{print $1}')
     echo "安装设备: $INST_DEV"
-  
-  # 运行 createinstallmedia - 使用实际挂载点
   - |
     sudo "$APP/Contents/Resources/createinstallmedia" \
       --volume "$ACTUAL_INSTALL_VOL" --nointeraction --downloadassets
-  
-  # 注入 OpenCore EFI
   - |
     diskutil mount "$EFI_DEV" || true
     if [ -d "$EFI_MNT" ]; then
@@ -101,8 +84,6 @@ build_script:
     else
       echo "警告: EFI 分区未挂载成功，跳过 EFI 注入"
     fi
-  
-  # 卸载镜像（强制 + 顺序）- 增加重试和错误处理
   - |
     sleep 5
     diskutil list
@@ -112,16 +93,14 @@ build_script:
       hdiutil detach "$EFI_DEV" -force || true
     fi
     sleep 2
-  
-    # 转换并生成 ISO
   - |
     mkdir -p output
     hdiutil convert temp_install.sparseimage \
       -format UDTO -o output/$MACOS_NAME.cdr
     mv output/$MACOS_NAME.cdr output/$MACOS_NAME.iso
+  - ssh-keygen -R "$IP"
+  - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@"$IP" "mkdir -p /root/macos && exit"
+  - sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "output/$MACOS_NAME.iso" root@"$IP":/root/macos/
+  - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@"$IP" "ls -lah /root/macos/"
 
-  # 上传 ISO（不压缩）
-  - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" "mkdir -p /root/macos && exit"
-  - sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no "output/$MACOS_NAME.iso" root@"$IP":/root/macos/
-  - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" "ls -lah /root/macos/"
 
