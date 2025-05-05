@@ -1,4 +1,4 @@
-# macOS
+# MacOS
 
 For macOS versions **earlier than 11**, the system image needs to be created using:
 [https://github.com/oneclickvirt/macos/blob/main/.github/workflows/build\_full\_iso.yml](https://github.com/oneclickvirt/macos/blob/main/.github/workflows/build_full_iso.yml)
