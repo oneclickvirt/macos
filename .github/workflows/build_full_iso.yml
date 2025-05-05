@@ -112,8 +112,7 @@ jobs:
 
       - name: Compress ISO with 7z (max compression)
         run: |
-          7z a -t7z -mx=9 output/${{ matrix.macos_name }}.iso.7z output/${{ matrix.macos_name }}.iso
-          # 可选删除原始 ISO
+          7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on -md=256m output/${{ matrix.macos_name }}.iso.7z output/${{ matrix.macos_name }}.iso
           rm output/${{ matrix.macos_name }}.iso
 
       - name: Upload compressed archive via SCP
