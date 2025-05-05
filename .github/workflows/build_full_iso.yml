@@ -20,12 +20,12 @@ jobs:
             macos_name: "mojave"
             macos_version_number: "10.14"
             catalog: "publicrelease"
-            image_size: "6100m"
+            image_size: "6400m"
           - macos_version: "19D2064"
             macos_name: "catalina"
             macos_version_number: "10.15"
             catalog: "publicrelease"
-            image_size: "6100m"
+            image_size: "6400m"
 
     steps:
       - name: Checkout code
