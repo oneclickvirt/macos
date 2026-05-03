@@ -64,8 +64,8 @@ build_script:
     chmod +x gibMacOS/gibMacOS.command
 
     cd gibMacOS
-    # -c 指定 catalog，-b 唯一定位构建号，不传 --version（flag 不存在时 argparse 会报错退出）
-    python3 gibMacOS.py -c "$CATALOG" -b "$MACOS_VERSION_CODE"
+    # -v 指定主版本号，-c 指定 catalog，-b 唯一定位构建号（三者缺一不可）
+    python3 gibMacOS.py -v "$MACOS_VERSION_NUMBER" -c "$CATALOG" -b "$MACOS_VERSION_CODE"
     cd ..
 
     DOWNLOAD_DIR=$(find "$PWD/gibMacOS/macOS Downloads" -type d -name "*$MACOS_VERSION_CODE*" | head -n1)
