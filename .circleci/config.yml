@@ -1,179 +1,229 @@
-version: 2.1
+# ==============================================================
+# 此 CircleCI 配置已停用，当前项目统一使用 AppVeyor 进行构建。
+# 以下内容仅作存档参考，不会被执行。
+# ==============================================================
 
-executors:
-  macos_executor:
-    macos:
-      xcode: "15.4.0"
-    resource_class: macos.m1.medium.gen1
+# version: 2.1
+#
+# executors:
+#   macos_executor:
+#     macos:
+#       xcode: "16.3.0"
+#     resource_class: macos.m1.medium.gen1
 
-jobs:
-  build:
-    executor: macos_executor
-    parameters:
-      macos_version:
-        type: string
-      macos_name:
-        type: string
-      macos_display_name:
-        type: string
-      macos_version_number:
-        type: string
-      catalog:
-        type: string
-    environment:
-      IP: ""
-      PASSWORD: ""
-    steps:
-      - checkout
+# jobs:
+#   build:
+#     executor: macos_executor
+#     parameters:
+#       macos_version:
+#         type: string
+#       macos_name:
+#         type: string
+#       macos_display_name:
+#         type: string
+#       macos_version_number:
+#         type: string
+#       catalog:
+#         type: string
+#       smbios_model:
+#         type: string
+#         default: "MacPro7,1"
+#     environment:
+#       IP: ""
+#       PASSWORD: ""
+#     steps:
+#       - checkout
 
-      - run:
-          name: 安装依赖
-          command: |
-            brew update
-            brew install wget sshpass p7zip
-
-      - run:
-          name: 克隆 gibMacOS
-          command: |
-            git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
-            chmod +x gibMacOS/gibMacOS.command
-
-      - run:
-          name: 下载 macOS 安装文件
-          working_directory: gibMacOS
-          command: |
-            python3 gibMacOS.py --catalog << parameters.catalog >> \
-                                --version << parameters.macos_version_number >> \
-                                -b << parameters.macos_version >>
-
-      - run:
-          name: 查找下载目录
-          command: |
-            DOWNLOAD_DIR=$(find "$(pwd)/gibMacOS/macOS Downloads" -type d -name "*<< parameters.macos_version >>*" | head -n1)
-            if [ -z "$DOWNLOAD_DIR" ]; then echo "Error: 下载目录未找到"; exit 1; fi
-            echo "export DOWNLOAD_DIR=\"$DOWNLOAD_DIR\"" >> $BASH_ENV
-
-      - run:
-          name: 安装 InstallAssistant.pkg
-          command: |
-            source $BASH_ENV
-            PKG=$(find "$DOWNLOAD_DIR" -maxdepth 1 -name "InstallAssistant.pkg" | head -n1)
-            if [ -z "$PKG" ]; then echo "Error: InstallAssistant.pkg 未找到"; exit 1; fi
-            sudo installer -pkg "$PKG" -target /Applications
-            APP="/Applications/Install macOS << parameters.macos_display_name >>.app"
-            if [ ! -d "$APP" ]; then echo "Error: $APP 安装失败"; exit 1; fi
-            echo "export INSTALLER_APP=\"$APP\"" >> $BASH_ENV
-
-      - run:
-          name: 根据下载内容动态创建稀疏镜像
-          command: |
-            source $BASH_ENV
-            # 计算下载目录大小（KB），向上取整到 GB
-            DOWNLOAD_SIZE_KB=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
-            DOWNLOAD_GB=$(( (DOWNLOAD_SIZE_KB + 1048575) / 1048576 ))
-            IMAGE_SIZE="${DOWNLOAD_GB}g"
-            echo "Creating sparse image of size: $IMAGE_SIZE"
-            hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE \
-              -volname "Install_<< parameters.macos_name >>" -o temp_install.sparseimage
-
-      - run:
-          name: 挂载镜像
-          command: |
-            source $BASH_ENV
-            OUTPUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
-            EFI_LINE=$(echo "$OUTPUT" | grep -i "EFI ")
-            INSTALL_LINE=$(echo "$OUTPUT" | grep -i "Install_<< parameters.macos_name >>")
-            EFI_DEV=$(echo $EFI_LINE | awk '{print $1}')
-            INST_DEV=$(echo $INSTALL_LINE | awk '{print $1}')
-            INST_MNT=$(echo $INSTALL_LINE | awk '{print $3}')
-            echo "export EFI_DEV=$EFI_DEV" >> $BASH_ENV
-            echo "export INST_DEV=$INST_DEV" >> $BASH_ENV
-            echo "export INST_MNT=$INST_MNT" >> $BASH_ENV
-
-      - run:
-          name: 执行 createinstallmedia
-          command: |
-            source $BASH_ENV
-            sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
-              --volume "$INST_MNT" \
-              --nointeraction \
-              --downloadassets
-
-      - run:
-          name: 注入 OpenCore EFI
-          command: |
-            source $BASH_ENV
-            diskutil mount "$EFI_DEV"
-            EFI_MNT_PT=$(mount | grep "$EFI_DEV" | awk '{print $3}')
-            sudo cp -R EFI/* "$EFI_MNT_PT/"
-            diskutil unmount "$EFI_MNT_PT" || true
-
-      - run:
-          name: 卸载镜像
-          command: |
-            source $BASH_ENV
-            hdiutil detach "$EFI_DEV" || true
-            hdiutil detach "$INST_DEV" || true
-
-      - run:
-          name: 生成 ISO
-          command: |
-            mkdir -p output
-            hdiutil convert temp_install.sparseimage -format UDTO -o output/<< parameters.macos_name >>.cdr
-            mv output/<< parameters.macos_name >>.cdr output/<< parameters.macos_name >>.iso
-
-      - run:
-          name: 压缩 ISO
-          command: |
-            7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on -md=256m \
-              "output/<< parameters.macos_name >>.iso.7z" \
-              "output/<< parameters.macos_name >>.iso"
-
-      - run:
-          name: 验证压缩文件
-          command: 7z t output/<< parameters.macos_name >>.iso.7z
-
-      - run:
-          name: 通过 SCP 上传
-          command: |
-            # IP 和 PASSWORD 来自项目环境变量
-            sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" "mkdir -p /root/macos"
-            sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no \
-              output/<< parameters.macos_name >>.iso.7z \
-              root@"$IP":/root/macos/
-            sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" "ls -lah /root/macos/"
-
-workflows:
-  build_iso_workflow:
-    jobs:
-      - build:
-          macos_version: "20G1427"
-          macos_name: "big‑sur"
-          macos_display_name: "Big Sur"
-          macos_version_number: "11.7"
-          catalog: "publicrelease"
-      - build:
-          macos_version: "21H1123"
-          macos_name: "monterey"
-          macos_display_name: "Monterey"
-          macos_version_number: "12"
-          catalog: "publicrelease"
-      - build:
-          macos_version: "22H313"
-          macos_name: "ventura"
-          macos_display_name: "Ventura"
-          macos_version_number: "13"
-          catalog: "publicrelease"
-      - build:
-          macos_version: "23H311"
-          macos_name: "sonoma"
-          macos_display_name: "Sonoma"
-          macos_version_number: "14"
-          catalog: "publicrelease"
-      - build:
-          macos_version: "24C101"
-          macos_name: "sequoia"
-          macos_display_name: "Sequoia"
-          macos_version_number: "15"
-          catalog: "publicrelease"
+#       - run:
+#           name: 安装依赖
+#           command: |
+#             brew update
+#             brew install wget sshpass p7zip
+#
+#       - run:
+#           name: 克隆 gibMacOS
+#           command: |
+#             git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
+#             chmod +x gibMacOS/gibMacOS.command
+#
+#       # ── 向 opencore.iso 注入唯一 SMBIOS 序列号（失败时保留原始值兜底）──
+#       - run:
+#           name: 注入 SMBIOS 序列号到 opencore.iso
+#           command: |
+#             if [ -f "EFI/opencore.iso" ]; then
+#               echo "正在为 macOS << parameters.macos_version_number >> 注入 SMBIOS (机型: << parameters.smbios_model >>) ..."
+#               python3 inject_smbios.py EFI/opencore.iso "<< parameters.smbios_model >>" || true
+#             else
+#               echo "警告: 未找到 EFI/opencore.iso，跳过 SMBIOS 注入"
+#             fi
+#
+#       - run:
+#           name: 下载 macOS 安装文件
+#           working_directory: gibMacOS
+#           command: |
+#             python3 gibMacOS.py --catalog << parameters.catalog >> \
+#                                 --version << parameters.macos_version_number >> \
+#                                 -b << parameters.macos_version >>
+#
+#       - run:
+#           name: 查找下载目录
+#           command: |
+#             DOWNLOAD_DIR=$(find "$(pwd)/gibMacOS/macOS Downloads" -type d -name "*<< parameters.macos_version >>*" | head -n1)
+#             if [ -z "$DOWNLOAD_DIR" ]; then echo "Error: 下载目录未找到"; exit 1; fi
+#             echo "export DOWNLOAD_DIR=\"$DOWNLOAD_DIR\"" >> $BASH_ENV
+#
+#       - run:
+#           name: 安装 InstallAssistant.pkg
+#           command: |
+#             source $BASH_ENV
+#             PKG=$(find "$DOWNLOAD_DIR" -maxdepth 1 -name "InstallAssistant.pkg" | head -n1)
+#             if [ -z "$PKG" ]; then echo "Error: InstallAssistant.pkg 未找到"; exit 1; fi
+#             sudo installer -pkg "$PKG" -target /Applications
+#             APP="/Applications/Install macOS << parameters.macos_display_name >>.app"
+#             if [ ! -d "$APP" ]; then echo "Error: $APP 安装失败"; exit 1; fi
+#             echo "export INSTALLER_APP=\"$APP\"" >> $BASH_ENV
+#
+#       - run:
+#           name: 根据下载内容动态创建稀疏镜像
+#           command: |
+#             source $BASH_ENV
+#             DOWNLOAD_SIZE_KB=$(du -sk "$DOWNLOAD_DIR" | awk '{print $1}')
+#             DOWNLOAD_GB=$(( (DOWNLOAD_SIZE_KB + 1048575) / 1048576 + 4 ))
+#             IMAGE_SIZE="${DOWNLOAD_GB}g"
+#             echo "Creating sparse image of size: $IMAGE_SIZE"
+#             hdiutil create -size $IMAGE_SIZE -layout GPTSPUD -fs HFS+J -type SPARSE \
+#               -volname "Install_<< parameters.macos_name >>" -o temp_install.sparseimage
+#
+#       - run:
+#           name: 挂载镜像
+#           command: |
+#             source $BASH_ENV
+#             OUTPUT=$(hdiutil attach temp_install.sparseimage -nobrowse -noverify -noautoopen)
+#             EFI_LINE=$(echo "$OUTPUT" | grep -i "EFI ")
+#             INSTALL_LINE=$(echo "$OUTPUT" | grep -i "Install_<< parameters.macos_name >>")
+#             EFI_DEV=$(echo $EFI_LINE | awk '{print $1}')
+#             INST_DEV=$(echo $INSTALL_LINE | awk '{print $1}')
+#             INST_MNT=$(echo $INSTALL_LINE | awk '{print $3}')
+#             echo "export EFI_DEV=$EFI_DEV" >> $BASH_ENV
+#             echo "export INST_DEV=$INST_DEV" >> $BASH_ENV
+#             echo "export INST_MNT=$INST_MNT" >> $BASH_ENV
+#
+#       - run:
+#           name: 执行 createinstallmedia
+#           command: |
+#             source $BASH_ENV
+#             sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
+#               --volume "$INST_MNT" \
+#               --nointeraction \
+#               --downloadassets
+#
+#       - run:
+#           name: 清理安装卷冗余缓存
+#           command: |
+#             source $BASH_ENV
+#             sudo find "$INST_MNT" -name ".DS_Store" -type f -delete 2>/dev/null || true
+#             sudo rm -rf "$INST_MNT/.Spotlight-V100" 2>/dev/null || true
+#             sudo rm -rf "$INST_MNT/.fseventsd"      2>/dev/null || true
+#             sudo rm -rf "$INST_MNT/.Trashes"        2>/dev/null || true
+#
+#       - run:
+#           name: 注入 OpenCore EFI
+#           command: |
+#             source $BASH_ENV
+#             diskutil mount "$EFI_DEV"
+#             EFI_MNT_PT=$(mount | grep "$EFI_DEV" | awk '{print $3}')
+#             if [ -n "$EFI_MNT_PT" ] && [ -d "$EFI_MNT_PT" ]; then
+#               sudo cp -R EFI/* "$EFI_MNT_PT/"
+#               diskutil unmount "$EFI_MNT_PT" || true
+#             else
+#               echo "警告: EFI 分区挂载点未找到，跳过 EFI 注入"
+#             fi
+#
+#       - run:
+#           name: 卸载镜像
+#           command: |
+#             source $BASH_ENV
+#             hdiutil detach "$EFI_DEV"  -force || true
+#             hdiutil detach "$INST_DEV" -force || true
+#             sleep 2
+#
+#       - run:
+#           name: 压缩稀疏镜像（回收空闲空间）
+#           command: |
+#             hdiutil compact temp_install.sparseimage -batteryallowed || true
+#
+#       - run:
+#           name: 生成 ISO
+#           command: |
+#             mkdir -p output
+#             hdiutil convert temp_install.sparseimage \
+#               -format UDTO -o output/<< parameters.macos_name >>.cdr
+#             mv output/<< parameters.macos_name >>.cdr output/<< parameters.macos_name >>.iso
+#
+#       - run:
+#           name: 压缩 ISO（7z LZMA2 最高压缩率）
+#           command: |
+#             7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on -md=256m \
+#               "output/<< parameters.macos_name >>.iso.7z" \
+#               "output/<< parameters.macos_name >>.iso"
+#             rm "output/<< parameters.macos_name >>.iso"
+#
+#       - run:
+#           name: 验证压缩文件
+#           command: 7z t output/<< parameters.macos_name >>.iso.7z
+#
+#       - run:
+#           name: 通过 SCP 上传
+#           command: |
+#             sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" "mkdir -p /root/macos"
+#             sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no \
+#               output/<< parameters.macos_name >>.iso.7z \
+#               root@"$IP":/root/macos/
+#             sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" "ls -lah /root/macos/"
+#
+# workflows:
+#   build_iso_workflow:
+#     jobs:
+#       - build:
+#           macos_version: "20G1427"
+#           macos_name: "big-sur"
+#           macos_display_name: "Big Sur"
+#           macos_version_number: "11"
+#           catalog: "publicrelease"
+#           smbios_model: "iMacPro1,1"
+#       - build:
+#           macos_version: "21H1123"
+#           macos_name: "monterey"
+#           macos_display_name: "Monterey"
+#           macos_version_number: "12"
+#           catalog: "publicrelease"
+#           smbios_model: "iMacPro1,1"
+#       - build:
+#           macos_version: "22H313"
+#           macos_name: "ventura"
+#           macos_display_name: "Ventura"
+#           macos_version_number: "13"
+#           catalog: "publicrelease"
+#           smbios_model: "MacPro7,1"
+#       - build:
+#           macos_version: "23H311"
+#           macos_name: "sonoma"
+#           macos_display_name: "Sonoma"
+#           macos_version_number: "14"
+#           catalog: "publicrelease"
+#           smbios_model: "MacPro7,1"
+#       - build:
+#           macos_version: "24C101"
+#           macos_name: "sequoia"
+#           macos_display_name: "Sequoia"
+#           macos_version_number: "15"
+#           catalog: "publicrelease"
+#           smbios_model: "MacPro7,1"
+#       - build:
+#           macos_version: "26A5247d"
+#           macos_name: "tahoe"
+#           macos_display_name: "Tahoe"
+#           macos_version_number: "26"
+#           catalog: "developerrelease"
+#           smbios_model: "MacPro7,1"
 

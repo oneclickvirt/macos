@@ -29,7 +29,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
@@ -56,8 +56,6 @@ jobs:
 
       - name: Prepare installer app
         run: |
-          wget https://raw.githubusercontent.com/oneclickvirt/macos/main/BuildmacOSInstallApp.py -O BuildmacOSInstallApp.py
-          chmod +x BuildmacOSInstallApp.py
           python3 BuildmacOSInstallApp.py "$DOWNLOAD_DIR" installer_app
           APP=$(find installer_app -maxdepth 2 -type d -name "Install*.app" | head -n1)
           if [ -z "$APP" ]; then echo "Error: built installer.app not found"; exit 1; fi
@@ -91,29 +89,53 @@ jobs:
           sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
             --volume "$INST_MNT" --nointeraction
 
+      # ── 清理不影响离线安装的冗余缓存（仅 macOS 元数据/索引文件）──
+      - name: 清理安装卷冗余缓存
+        run: |
+          echo "清理安装卷上的冗余缓存（不影响离线安装）..."
+          sudo find "$INST_MNT" -name ".DS_Store" -type f -delete 2>/dev/null || true
+          sudo rm -rf "$INST_MNT/.Spotlight-V100" 2>/dev/null || true
+          sudo rm -rf "$INST_MNT/.fseventsd"      2>/dev/null || true
+          sudo rm -rf "$INST_MNT/.Trashes"        2>/dev/null || true
+          echo "缓存清理完成"
+
       - name: Inject OpenCore EFI
         run: |
           diskutil mount "$EFI_DEV"
           EFI_MNT_POINT=$(mount | grep "$EFI_DEV" | awk '{print $3}')
-          sudo cp -R EFI/* "$EFI_MNT_POINT/"
-          diskutil unmount "$EFI_MNT_POINT" || true
+          if [ -n "$EFI_MNT_POINT" ] && [ -d "$EFI_MNT_POINT" ]; then
+            sudo cp -R EFI/* "$EFI_MNT_POINT/"
+            diskutil unmount "$EFI_MNT_POINT" || true
+          else
+            echo "警告: EFI 分区挂载点未找到，跳过 EFI 注入"
+          fi
 
       - name: Detach sparse image
         run: |
-          hdiutil detach "$EFI_DEV" || true
-          hdiutil detach "$INST_DEV" || true
+          hdiutil detach "$EFI_DEV"  -force || true
+          hdiutil detach "$INST_DEV" -force || true
+          sleep 5
+
+      # ── 压缩稀疏镜像以回收空闲空间，显著减小最终 ISO 体积 ────────
+      - name: 压缩稀疏镜像（回收空闲空间）
+        run: |
+          echo "正在压缩稀疏镜像..."
+          hdiutil compact temp_install.sparseimage -batteryallowed || true
+          echo "稀疏镜像压缩完成"
 
       - name: Create hybrid ISO
         run: |
           mkdir -p output
-          sleep 20
           hdiutil convert temp_install.sparseimage -format UDTO -o output/${{ matrix.macos_name }}.cdr
           mv output/${{ matrix.macos_name }}.cdr output/${{ matrix.macos_name }}.iso
 
       - name: Compress ISO with 7z (max compression)
         run: |
-          7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on -md=256m output/${{ matrix.macos_name }}.iso.7z output/${{ matrix.macos_name }}.iso
+          7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on -md=256m \
+            output/${{ matrix.macos_name }}.iso.7z \
+            output/${{ matrix.macos_name }}.iso
           rm output/${{ matrix.macos_name }}.iso
+          echo "压缩完成: $(ls -lh output/${{ matrix.macos_name }}.iso.7z)"
 
       - name: Upload compressed archive via SCP
         run: |

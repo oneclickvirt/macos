@@ -5,7 +5,7 @@ only_commits:
 environment:
   matrix:
     - MACOS_VERSION_CODE: "20G1427"
-      MACOS_NAME: "big‑sur"
+      MACOS_NAME: "big-sur"
       MACOS_DISPLAY_NAME: "Big Sur"
       MACOS_VERSION_NUMBER: "11"
       CATALOG: "publicrelease"
@@ -34,13 +34,21 @@ environment:
       MACOS_VERSION_NUMBER: "15"
       CATALOG: "publicrelease"
       IMAGE_SIZE: "17200m"
+    # macOS 26 Tahoe — 正式发布后请将 MACOS_VERSION_CODE 更新为实际构建号
+    # 发布前可使用 developerrelease catalog 配合 beta 构建号
+    - MACOS_VERSION_CODE: "26A5247d"
+      MACOS_NAME: "tahoe"
+      MACOS_DISPLAY_NAME: "Tahoe"
+      MACOS_VERSION_NUMBER: "26"
+      CATALOG: "developerrelease"
+      IMAGE_SIZE: "18500m"
 
 matrix:
   fast_finish: true
 
 build_script:
   - brew update
-  - brew install sshpass
+  - brew install sshpass p7zip
   - git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
   - chmod +x gibMacOS/gibMacOS.command
   - cd gibMacOS
@@ -84,15 +92,32 @@ build_script:
   - |
     sudo "$APP/Contents/Resources/createinstallmedia" \
       --volume "$ACTUAL_INSTALL_VOL" --nointeraction --downloadassets
+  # ── 清理不影响离线安装的冗余缓存文件（仅安全删除，不破坏安装器）──
+  - |
+    echo "清理安装卷上的冗余缓存..."
+    INSTALL_VOL_PATH=$(df | grep "Install_$MACOS_NAME" | awk '{print $NF}' | head -n1)
+    if [ -z "$INSTALL_VOL_PATH" ]; then
+      INSTALL_VOL_PATH="$ACTUAL_INSTALL_VOL"
+    fi
+    sudo find "$INSTALL_VOL_PATH" -name ".DS_Store" -type f -delete 2>/dev/null || true
+    sudo rm -rf "$INSTALL_VOL_PATH/.Spotlight-V100" 2>/dev/null || true
+    sudo rm -rf "$INSTALL_VOL_PATH/.fseventsd"      2>/dev/null || true
+    sudo rm -rf "$INSTALL_VOL_PATH/.Trashes"        2>/dev/null || true
+    echo "缓存清理完成"
   - |
     diskutil mount "$EFI_DEV" || true
-    if [ -d "$EFI_MNT" ]; then
+    # 获取 EFI 分区实际挂载点（diskutil mount 后重新查询）
+    ACTUAL_EFI_MNT=$(mount | grep "$EFI_DEV" | awk '{print $3}')
+    if [ -z "$ACTUAL_EFI_MNT" ]; then
+      ACTUAL_EFI_MNT="$EFI_MNT"
+    fi
+    if [ -d "$ACTUAL_EFI_MNT" ]; then
       if [ -d "EFI" ]; then
-        sudo cp -R EFI/* "$EFI_MNT/"
+        sudo cp -R EFI/* "$ACTUAL_EFI_MNT/"
       else
         echo "警告: EFI 目录不存在，跳过 EFI 注入"
       fi
-      diskutil unmount "$EFI_DEV" || true
+      diskutil unmount "$ACTUAL_EFI_MNT" || true
     else
       echo "警告: EFI 分区未挂载成功，跳过 EFI 注入"
     fi
@@ -101,16 +126,28 @@ build_script:
     diskutil list
     echo "尝试卸载分区..."
     hdiutil detach "$INST_DEV" -force || true
-    if [ ! -z "$EFI_DEV" ]; then
+    if [ -n "$EFI_DEV" ]; then
       hdiutil detach "$EFI_DEV" -force || true
     fi
     sleep 2
+  # ── 压缩稀疏镜像（回收空闲空间），显著减小最终 ISO 体积 ──────
+  - |
+    echo "压缩稀疏镜像以回收空闲空间..."
+    hdiutil compact temp_install.sparseimage -batteryallowed || true
+    echo "稀疏镜像压缩完成"
   - |
     mkdir -p output
     hdiutil convert temp_install.sparseimage \
       -format UDTO -o output/$MACOS_NAME.cdr
     mv output/$MACOS_NAME.cdr output/$MACOS_NAME.iso
+  # ── 使用 7z 最高压缩率打包 ISO，进一步缩减传输体积 ──────────
+  - |
+    echo "使用 7z LZMA2 压缩 ISO..."
+    7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on -md=256m \
+      output/$MACOS_NAME.iso.7z output/$MACOS_NAME.iso
+    rm output/$MACOS_NAME.iso
+    echo "压缩完成: $(ls -lh output/$MACOS_NAME.iso.7z)"
   - ssh-keygen -R "$IP"
   - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@"$IP" "mkdir -p /root/macos && exit"
-  - sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "output/$MACOS_NAME.iso" root@"$IP":/root/macos/
+  - sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "output/$MACOS_NAME.iso.7z" root@"$IP":/root/macos/
   - sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@"$IP" "ls -lah /root/macos/"
