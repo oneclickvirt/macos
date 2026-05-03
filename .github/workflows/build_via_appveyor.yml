@@ -87,6 +87,8 @@ jobs:
           ACCOUNT="${{ inputs.appveyor_account }}"
           SLUG="${{ inputs.appveyor_slug }}"
           DEST="${{ inputs.destination }}"
+          # 导出为环境变量，Python 子进程才能通过 os.environ 读取
+          export TARGET ACCOUNT SLUG DEST REMOTE_IP REMOTE_PASSWORD
 
           # 用 Python 安全构造 JSON（避免密码中的特殊字符破坏 JSON 格式）
           BODY=$(python3 - <<'PYEOF'

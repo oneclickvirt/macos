@@ -49,22 +49,21 @@ matrix:
 build_script:
   # 全部构建逻辑在同一个 shell 里执行，保证变量作用域和早退（exit 0）正常工作
   - |
-    set -e
-
     # ── 由 GitHub Actions 触发时，只构建目标版本，跳过其余矩阵行 ──
     if [ -n "$GHA_TARGET_VERSION" ] && [ "$MACOS_NAME" != "$GHA_TARGET_VERSION" ]; then
       echo "跳过矩阵行 MACOS_NAME=$MACOS_NAME（目标: $GHA_TARGET_VERSION）"
       exit 0
     fi
 
-    brew update
+    brew update || true
     brew install sshpass p7zip
 
     git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
     chmod +x gibMacOS/gibMacOS.command
 
     cd gibMacOS
-    python3 gibMacOS.py --catalog "$CATALOG" --version "$MACOS_VERSION_NUMBER" -b "$MACOS_VERSION_CODE"
+    # -c 指定 catalog，-b 唯一定位构建号，不传 --version（flag 不存在时 argparse 会报错退出）
+    python3 gibMacOS.py -c "$CATALOG" -b "$MACOS_VERSION_CODE"
     cd ..
 
     DOWNLOAD_DIR=$(find "$PWD/gibMacOS/macOS Downloads" -type d -name "*$MACOS_VERSION_CODE*" | head -n1)
