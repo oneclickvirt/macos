@@ -1,0 +1,246 @@
+# ==============================================================
+# ⚠️  此 workflow 已被 build_via_appveyor.yml 取代。
+#
+# GitHub Actions 的 macOS runner 磁盘空间（~14 GB）不足以完成
+# macOS 11+ 镜像的构建（稀疏镜像 + ISO 转换需要 30~50 GB）。
+#
+# 请使用 build_via_appveyor.yml：
+#   由 GitHub Actions 触发 AppVeyor 构建（AppVeyor macOS runner
+#   空间充足），构建完成后自动将产物下载回 GitHub Actions Artifact。
+# ==============================================================
+
+
+on:
+  workflow_dispatch:
+    inputs:
+      macos_target:
+        description: '要构建的 macOS 版本'
+        required: true
+        default: 'sequoia'
+        type: choice
+        options:
+          - big-sur
+          - monterey
+          - ventura
+          - sonoma
+          - sequoia
+          - tahoe
+      retention_days:
+        description: 'Artifact 保留天数 (1~90)'
+        required: false
+        default: '7'
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 360   # 大版本（Sequoia/Tahoe）构建可能超过 2 小时
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 根据选择映射构建参数 ────────────────────────────────────
+      - name: 设置构建参数
+        run: |
+          TARGET="${{ github.event.inputs.macos_target }}"
+          case "$TARGET" in
+            big-sur)
+              VERSION_CODE="20G1427"
+              DISPLAY_NAME="Big Sur"
+              VERSION_NUMBER="11"
+              CATALOG="publicrelease"
+              IMAGE_SIZE="13270m"
+              ;;
+            monterey)
+              VERSION_CODE="21H1123"
+              DISPLAY_NAME="Monterey"
+              VERSION_NUMBER="12"
+              CATALOG="publicrelease"
+              IMAGE_SIZE="14275m"
+              ;;
+            ventura)
+              VERSION_CODE="22H313"
+              DISPLAY_NAME="Ventura"
+              VERSION_NUMBER="13"
+              CATALOG="publicrelease"
+              IMAGE_SIZE="14275m"
+              ;;
+            sonoma)
+              VERSION_CODE="23H311"
+              DISPLAY_NAME="Sonoma"
+              VERSION_NUMBER="14"
+              CATALOG="publicrelease"
+              IMAGE_SIZE="15700m"
+              ;;
+            sequoia)
+              VERSION_CODE="24C101"
+              DISPLAY_NAME="Sequoia"
+              VERSION_NUMBER="15"
+              CATALOG="publicrelease"
+              IMAGE_SIZE="17200m"
+              ;;
+            tahoe)
+              # 正式发布后请将 VERSION_CODE 更新为实际构建号
+              VERSION_CODE="26A5247d"
+              DISPLAY_NAME="Tahoe"
+              VERSION_NUMBER="26"
+              CATALOG="developerrelease"
+              IMAGE_SIZE="18500m"
+              ;;
+            *)
+              echo "未知版本: $TARGET"; exit 1
+              ;;
+          esac
+          echo "MACOS_NAME=$TARGET"            >> $GITHUB_ENV
+          echo "MACOS_VERSION_CODE=$VERSION_CODE"    >> $GITHUB_ENV
+          echo "MACOS_DISPLAY_NAME=$DISPLAY_NAME"    >> $GITHUB_ENV
+          echo "MACOS_VERSION_NUMBER=$VERSION_NUMBER" >> $GITHUB_ENV
+          echo "CATALOG=$CATALOG"              >> $GITHUB_ENV
+          echo "IMAGE_SIZE=$IMAGE_SIZE"        >> $GITHUB_ENV
+          echo "--- 构建参数 ---"
+          echo "  版本名称 : $DISPLAY_NAME ($VERSION_NUMBER)"
+          echo "  构建  号 : $VERSION_CODE"
+          echo "  Catalog  : $CATALOG"
+          echo "  镜像大小 : $IMAGE_SIZE"
+
+      - name: 安装依赖
+        run: brew install p7zip
+
+      - name: 克隆 gibMacOS
+        run: |
+          git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
+          chmod +x gibMacOS/gibMacOS.command
+
+      - name: 下载 macOS 安装文件
+        working-directory: gibMacOS
+        run: |
+          python3 gibMacOS.py --catalog "$CATALOG" \
+                              --version "$MACOS_VERSION_NUMBER" \
+                              -b "$MACOS_VERSION_CODE"
+
+      - name: 查找下载目录
+        run: |
+          DIR=$(find "${GITHUB_WORKSPACE}/gibMacOS/macOS Downloads" \
+                -type d -name "*${MACOS_VERSION_CODE}*" | head -n1)
+          if [ -z "$DIR" ]; then
+            echo "Error: 下载目录未找到"; exit 1
+          fi
+          echo "DOWNLOAD_DIR=$DIR" >> $GITHUB_ENV
+
+      - name: 安装 InstallAssistant.pkg
+        run: |
+          PKG=$(find "$DOWNLOAD_DIR" -maxdepth 1 -name "InstallAssistant.pkg" | head -n1)
+          if [ -z "$PKG" ]; then
+            echo "Error: InstallAssistant.pkg 未找到"; exit 1
+          fi
+          sudo installer -pkg "$PKG" -target /Applications
+          APP="/Applications/Install macOS ${MACOS_DISPLAY_NAME}.app"
+          if [ ! -d "$APP" ]; then
+            echo "Error: $APP 安装失败"; exit 1
+          fi
+          echo "INSTALLER_APP=$APP" >> $GITHUB_ENV
+
+      - name: 创建稀疏镜像
+        run: |
+          echo "创建稀疏镜像，大小: $IMAGE_SIZE"
+          hdiutil create \
+            -size "$IMAGE_SIZE" \
+            -layout GPTSPUD \
+            -fs HFS+J \
+            -type SPARSE \
+            -volname "Install_${MACOS_NAME}" \
+            -o temp_install.sparseimage
+
+      - name: 挂载稀疏镜像
+        run: |
+          ATTACH_OUT=$(hdiutil attach temp_install.sparseimage \
+            -nobrowse -noverify -noautoopen -readwrite)
+          echo "挂载信息: $ATTACH_OUT"
+          EFI_DEV=$(echo "$ATTACH_OUT" | awk '/EFI$/ {print $1}')
+          EFI_MNT=$(echo "$ATTACH_OUT" | awk '/EFI$/ {print $3}')
+          INST_DEV=$(echo "$ATTACH_OUT" | grep "Install_${MACOS_NAME}" | awk '{print $1}')
+          INST_MNT=$(echo "$ATTACH_OUT" | grep "Install_${MACOS_NAME}" | awk '{print $3}')
+          if [ -z "$INST_MNT" ]; then
+            echo "Error: 无法找到安装卷挂载点"; exit 1
+          fi
+          echo "EFI_DEV=$EFI_DEV"   >> $GITHUB_ENV
+          echo "EFI_MNT=$EFI_MNT"   >> $GITHUB_ENV
+          echo "INST_DEV=$INST_DEV" >> $GITHUB_ENV
+          echo "INST_MNT=$INST_MNT" >> $GITHUB_ENV
+
+      - name: 执行 createinstallmedia
+        run: |
+          sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
+            --volume "$INST_MNT" --nointeraction --downloadassets
+
+      # ── 清理不影响离线安装的冗余缓存 ──────────────────────────
+      - name: 清理安装卷冗余缓存
+        run: |
+          # 重新获取当前挂载点（createinstallmedia 会重命名卷）
+          CURRENT_MNT=$(df | grep "Install " | awk '{print $NF}' | head -n1)
+          if [ -z "$CURRENT_MNT" ]; then
+            CURRENT_MNT="$INST_MNT"
+          fi
+          sudo find "$CURRENT_MNT" -name ".DS_Store" -type f -delete 2>/dev/null || true
+          sudo rm -rf "$CURRENT_MNT/.Spotlight-V100" 2>/dev/null || true
+          sudo rm -rf "$CURRENT_MNT/.fseventsd"      2>/dev/null || true
+          sudo rm -rf "$CURRENT_MNT/.Trashes"        2>/dev/null || true
+          echo "缓存清理完成"
+          # 更新挂载点供后续步骤使用
+          echo "INST_MNT=$CURRENT_MNT" >> $GITHUB_ENV
+
+      - name: 注入 OpenCore EFI
+        run: |
+          diskutil mount "$EFI_DEV" || true
+          ACTUAL_EFI_MNT=$(mount | grep "$EFI_DEV" | awk '{print $3}')
+          if [ -z "$ACTUAL_EFI_MNT" ]; then
+            ACTUAL_EFI_MNT="$EFI_MNT"
+          fi
+          if [ -d "$ACTUAL_EFI_MNT" ] && [ -d "EFI" ]; then
+            sudo cp -R EFI/* "$ACTUAL_EFI_MNT/"
+            diskutil unmount "$ACTUAL_EFI_MNT" || true
+          else
+            echo "警告: EFI 分区挂载点未找到或 EFI 目录不存在，跳过 EFI 注入"
+          fi
+
+      - name: 卸载稀疏镜像
+        run: |
+          sleep 5
+          diskutil list
+          hdiutil detach "$INST_DEV" -force || true
+          if [ -n "$EFI_DEV" ]; then
+            hdiutil detach "$EFI_DEV" -force || true
+          fi
+          sleep 2
+
+      # ── 压缩稀疏镜像以回收空闲空间 ────────────────────────────
+      - name: 压缩稀疏镜像（回收空闲空间）
+        run: |
+          echo "正在压缩稀疏镜像..."
+          hdiutil compact temp_install.sparseimage -batteryallowed || true
+          echo "稀疏镜像压缩完成"
+
+      - name: 转换为 ISO
+        run: |
+          mkdir -p output
+          hdiutil convert temp_install.sparseimage \
+            -format UDTO -o output/${MACOS_NAME}.cdr
+          mv output/${MACOS_NAME}.cdr output/${MACOS_NAME}.iso
+          echo "ISO 大小: $(ls -lh output/${MACOS_NAME}.iso | awk '{print $5}')"
+
+      - name: 7z 压缩 ISO（LZMA2 最高压缩率）
+        run: |
+          7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on -md=256m \
+            output/${MACOS_NAME}.iso.7z \
+            output/${MACOS_NAME}.iso
+          rm output/${MACOS_NAME}.iso
+          echo "压缩完成: $(ls -lh output/${MACOS_NAME}.iso.7z)"
+
+      # ── 上传为 GitHub Actions Artifact，可在本次 run 页面直接下载 ──
+      - name: 上传 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ github.event.inputs.macos_target }}-iso
+          path: output/*.iso.7z
+          retention-days: ${{ github.event.inputs.retention_days }}
+          compression-level: 0   # 已用 7z 压缩，跳过 artifact 二次压缩

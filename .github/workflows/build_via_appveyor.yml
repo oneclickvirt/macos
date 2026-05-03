@@ -1,0 +1,251 @@
+name: Trigger AppVeyor macOS Build
+
+# 工作流程说明
+# ─────────────────────────────────────────────────────────────
+# 本 workflow 运行在 ubuntu runner（仅作调度，不占用大磁盘）。
+# 通过 AppVeyor REST API 触发 AppVeyor macOS 构建，
+# AppVeyor runner 负责实际编译和产物存储。
+#
+# 产物存储方式（由 destination 输入决定）：
+#   appveyor_artifact — AppVeyor 直接存储为 Artifact，此处打印下载 URL
+#   scp_server        — AppVeyor 通过 SCP 上传到目标服务器
+#
+# 预置 Secret（仓库 Settings → Secrets and variables → Actions）：
+#   APPVEYOR_TOKEN    —  AppVeyor API Token（必须）
+#   REMOTE_IP         —  目标服务器 IP（destination=scp_server 时必须）
+#   REMOTE_PASSWORD   —  目标服务器 root 密码（destination=scp_server 时必须）
+# ─────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      macos_target:
+        description: '要构建的 macOS 版本'
+        required: true
+        default: 'sequoia'
+        type: choice
+        options:
+          - big-sur
+          - monterey
+          - ventura
+          - sonoma
+          - sequoia
+          - tahoe
+      destination:
+        description: '产物存放位置'
+        required: true
+        default: 'appveyor_artifact'
+        type: choice
+        options:
+          - appveyor_artifact
+          - scp_server
+      appveyor_account:
+        description: 'AppVeyor 账号名'
+        required: false
+        default: 'oneclickvirt'
+      appveyor_slug:
+        description: 'AppVeyor 项目 Slug'
+        required: false
+        default: 'macos'
+
+jobs:
+  trigger-and-monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 480   # 最长 8 小时（AppVeyor 构建约 2~4 小时）
+
+    steps:
+      # ── 0. 前置检查 ────────────────────────────────────────────
+      - name: 检查必要 Secret
+        env:
+          HAS_TOKEN: ${{ secrets.APPVEYOR_TOKEN != '' && 'yes' || 'no' }}
+          HAS_IP: ${{ secrets.REMOTE_IP != '' && 'yes' || 'no' }}
+          HAS_PWD: ${{ secrets.REMOTE_PASSWORD != '' && 'yes' || 'no' }}
+        run: |
+          if [ "$HAS_TOKEN" != "yes" ]; then
+            echo "::error::缺少必要 Secret：APPVEYOR_TOKEN"
+            echo "::error::请在仓库 Settings → Secrets and variables → Actions 中添加"
+            echo "::error::AppVeyor API Token 可在 https://ci.appveyor.com/api-keys 生成"
+            exit 1
+          fi
+          if [ "${{ inputs.destination }}" = "scp_server" ]; then
+            if [ "$HAS_IP" != "yes" ] || [ "$HAS_PWD" != "yes" ]; then
+              echo "::error::destination=scp_server 需要配置 REMOTE_IP 和 REMOTE_PASSWORD Secret"
+              exit 1
+            fi
+          fi
+          echo "✅ Secret 检查通过（destination: ${{ inputs.destination }}）"
+
+      # ── 1. 触发 AppVeyor 构建 ───────────────────────────────────
+      - name: 触发 AppVeyor 构建
+        id: trigger
+        env:
+          APPVEYOR_TOKEN: ${{ secrets.APPVEYOR_TOKEN }}
+          REMOTE_IP: ${{ secrets.REMOTE_IP }}
+          REMOTE_PASSWORD: ${{ secrets.REMOTE_PASSWORD }}
+        run: |
+          TARGET="${{ inputs.macos_target }}"
+          ACCOUNT="${{ inputs.appveyor_account }}"
+          SLUG="${{ inputs.appveyor_slug }}"
+          DEST="${{ inputs.destination }}"
+
+          # 用 Python 安全构造 JSON（避免密码中的特殊字符破坏 JSON 格式）
+          BODY=$(python3 - <<'PYEOF'
+import json, os
+target   = os.environ["TARGET"]
+account  = os.environ["ACCOUNT"]
+slug     = os.environ["SLUG"]
+dest     = os.environ["DEST"]
+
+env_vars = {"GHA_TARGET_VERSION": target}
+if dest == "appveyor_artifact":
+    env_vars["APPVEYOR_ARTIFACT"] = "true"
+elif dest == "scp_server":
+    env_vars["IP"]       = os.environ.get("REMOTE_IP", "")
+    env_vars["PASSWORD"] = os.environ.get("REMOTE_PASSWORD", "")
+
+body = {
+    "accountName":        account,
+    "projectSlug":        slug,
+    "branch":             "main",
+    "environmentVariables": env_vars,
+}
+print(json.dumps(body))
+PYEOF
+)
+
+          echo "▶ 触发 AppVeyor 构建：$ACCOUNT/$SLUG  目标版本：$TARGET  产物方式：$DEST"
+
+          RESP=$(curl -sf -X POST \
+            -H "Authorization: Bearer $APPVEYOR_TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://ci.appveyor.com/api/builds" \
+            -d "$BODY")
+
+          if [ -z "$RESP" ]; then
+            echo "::error::AppVeyor API 无响应，请检查 APPVEYOR_TOKEN 是否有效"
+            exit 1
+          fi
+
+          BUILD_VER=$(echo "$RESP" | python3 -c \
+            "import sys, json; print(json.load(sys.stdin)['version'])" 2>/dev/null)
+
+          if [ -z "$BUILD_VER" ]; then
+            echo "::error::AppVeyor 响应异常：$RESP"
+            exit 1
+          fi
+
+          echo "BUILD_VERSION=$BUILD_VER" >> "$GITHUB_ENV"
+          echo "AV_ACCOUNT=$ACCOUNT"      >> "$GITHUB_ENV"
+          echo "AV_SLUG=$SLUG"            >> "$GITHUB_ENV"
+          echo "AV_TARGET=$TARGET"        >> "$GITHUB_ENV"
+          echo "AV_DEST=$DEST"            >> "$GITHUB_ENV"
+          echo ""
+          echo "✅ 构建已触发，版本号：$BUILD_VER"
+          echo "   AppVeyor 构建页面：https://ci.appveyor.com/project/$ACCOUNT/$SLUG/build/$BUILD_VER"
+
+      # ── 2. 轮询等待构建完成 ────────────────────────────────────
+      - name: 等待 AppVeyor 构建完成
+        env:
+          APPVEYOR_TOKEN: ${{ secrets.APPVEYOR_TOKEN }}
+        run: |
+          MAX=150   # 150 × 2min = 5h
+          for i in $(seq 1 $MAX); do
+            sleep 120
+
+            RESP=$(curl -sf \
+              -H "Authorization: Bearer $APPVEYOR_TOKEN" \
+              "https://ci.appveyor.com/api/projects/$AV_ACCOUNT/$AV_SLUG/build/$BUILD_VERSION" \
+              2>/dev/null || echo '{"build":{"status":"unknown"}}')
+
+            STATUS=$(echo "$RESP" | python3 -c \
+              "import sys, json; print(json.load(sys.stdin)['build']['status'])" \
+              2>/dev/null || echo "unknown")
+
+            ELAPSED=$(( i * 2 ))
+            echo "[${ELAPSED}min] status=${STATUS}  →  https://ci.appveyor.com/project/$AV_ACCOUNT/$AV_SLUG/build/$BUILD_VERSION"
+
+            case "$STATUS" in
+              success)
+                echo "✅ 构建成功"
+                echo "$RESP" > /tmp/av_build.json
+                break
+                ;;
+              failed|cancelled|error)
+                echo "::error::AppVeyor 构建失败（status=$STATUS）"
+                echo "::error::详情：https://ci.appveyor.com/project/$AV_ACCOUNT/$AV_SLUG/build/$BUILD_VERSION"
+                exit 1
+                ;;
+            esac
+
+            if [ "$i" -eq "$MAX" ]; then
+              echo "::error::等待超时（已等待 $(( MAX * 2 )) 分钟），请检查 AppVeyor 构建"
+              exit 1
+            fi
+          done
+
+      # ── 3a. [appveyor_artifact] 打印 Artifact 下载 URL ────────
+      - name: 打印 AppVeyor Artifact 下载 URL
+        if: env.AV_DEST == 'appveyor_artifact'
+        env:
+          APPVEYOR_TOKEN: ${{ secrets.APPVEYOR_TOKEN }}
+        run: |
+          TARGET_FILE="${AV_TARGET}.iso.7z"
+
+          # 从构建结果中找到含目标 Artifact 的 Job ID
+          JOB_IDS=$(python3 -c "
+import json
+with open('/tmp/av_build.json') as f:
+    data = json.load(f)
+for job in data['build']['jobs']:
+    print(job['jobId'])
+")
+
+          FOUND_JOB_ID=""
+          for JID in $JOB_IDS; do
+            ARTS=$(curl -sf \
+              -H "Authorization: Bearer $APPVEYOR_TOKEN" \
+              "https://ci.appveyor.com/api/buildjobs/$JID/artifacts" \
+              2>/dev/null || echo "[]")
+            MATCH=$(echo "$ARTS" | python3 -c "
+import sys, json
+arts = json.load(sys.stdin)
+for a in arts:
+    fn = a.get('fileName','') or a.get('name','')
+    if fn == '$TARGET_FILE':
+        print('yes')
+        break
+" 2>/dev/null || echo "")
+            if [ "$MATCH" = "yes" ]; then
+              FOUND_JOB_ID="$JID"
+              break
+            fi
+          done
+
+          BUILD_PAGE="https://ci.appveyor.com/project/$AV_ACCOUNT/$AV_SLUG/build/$BUILD_VERSION"
+          echo ""
+          echo "════════════════════════════════════════════════════"
+          echo "  ✅ AppVeyor 构建完成：$AV_TARGET"
+          echo "  构建页面：$BUILD_PAGE"
+          if [ -n "$FOUND_JOB_ID" ]; then
+            DL_URL="https://ci.appveyor.com/api/buildjobs/$FOUND_JOB_ID/artifacts/$TARGET_FILE"
+            echo "  Artifact 下载 URL（需 Bearer Token）："
+            echo "    $DL_URL"
+            echo "  curl 示例："
+            echo "    curl -L -H 'Authorization: Bearer <APPVEYOR_TOKEN>' \\"
+            echo "      '$DL_URL' -o '$TARGET_FILE'"
+          else
+            echo "  ⚠️  未找到 Artifact $TARGET_FILE，请到构建页面手动检查"
+          fi
+          echo "════════════════════════════════════════════════════"
+
+      # ── 3b. [scp_server] 确认 SCP 已由 AppVeyor 完成 ───────────
+      - name: 确认 SCP 上传完成
+        if: env.AV_DEST == 'scp_server'
+        run: |
+          echo ""
+          echo "════════════════════════════════════════════════════"
+          echo "  ✅ AppVeyor 构建完成：$AV_TARGET"
+          echo "  SCP 已由 AppVeyor runner 直接上传至目标服务器"
+          echo "  构建详情：https://ci.appveyor.com/project/$AV_ACCOUNT/$AV_SLUG/build/$BUILD_VERSION"
+          echo "════════════════════════════════════════════════════"
+
