@@ -56,7 +56,9 @@ build_script:
     fi
 
     brew update || true
-    brew install sshpass p7zip
+    # p7zip 在 AppVeyor Sonoma 镜像中已预装，brew install 有时因迁移/升级返回非零退出码
+    # AppVeyor macOS shell 隐式使用 -e，必须加 || true 防止脚本被中断
+    HOMEBREW_NO_INSTALL_CLEANUP=1 brew install sshpass p7zip || true
 
     git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
     chmod +x gibMacOS/gibMacOS.command
