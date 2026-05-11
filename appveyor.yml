@@ -103,8 +103,8 @@ build_script:
       echo "Error: 无法找到安装卷挂载点"; exit 1
     fi
     echo "实际挂载点: $ACTUAL_INSTALL_VOL"
-    EFI_DEV=$(echo "$ATTACH_OUT" | awk '/EFI$/ {print $1}')
-    EFI_MNT=$(echo "$ATTACH_OUT" | awk '/EFI$/ {print $3}')
+    EFI_DEV=$(echo "$ATTACH_OUT" | awk '$2=="EFI"{print $1}')
+    EFI_MNT=$(echo "$ATTACH_OUT" | awk '$2=="EFI"{print $3}')
     INST_DEV=$(echo "$ATTACH_OUT" | grep "Install_$MACOS_NAME" | awk '{print $1}')
     echo "安装设备: $INST_DEV"
 
@@ -116,13 +116,13 @@ build_script:
       echo "⚠ --downloadassets 失败，重新定位挂载点后不带资产重试..."
       # 通过设备节点获取当前挂载点（解析多词路径，如 /Volumes/Install macOS Sequoia）
       RETRY_VOL=$(diskutil info "$INST_DEV" 2>/dev/null \
-        | awk '/Mount Point/ {s=""; for(i=3;i<=NF;i++) s=s(i>3?" ":"")$i; if(s!="") print s}')
+        | awk '/Mount Point/{mp=""; for(i=3;i<=NF;i++){if(i>3)mp=mp" "; mp=mp $i}; if(mp!="")print mp}')
       if [ -z "$RETRY_VOL" ]; then
         # 卷可能被临时卸载，尝试重新挂载再查找
         diskutil mount "$INST_DEV" || true
         sleep 2
         RETRY_VOL=$(diskutil info "$INST_DEV" 2>/dev/null \
-          | awk '/Mount Point/ {s=""; for(i=3;i<=NF;i++) s=s(i>3?" ":"")$i; if(s!="") print s}')
+          | awk '/Mount Point/{mp=""; for(i=3;i<=NF;i++){if(i>3)mp=mp" "; mp=mp $i}; if(mp!="")print mp}')
       fi
       if [ -z "$RETRY_VOL" ]; then
         RETRY_VOL="$ACTUAL_INSTALL_VOL"
@@ -139,7 +139,7 @@ build_script:
     # createinstallmedia 会把卷名从 Install_$MACOS_NAME 重命名为 "Install macOS $MACOS_DISPLAY_NAME"
     # 用 diskutil info 通过设备节点查挂载点（解析含空格的多词路径），找不到时再用 df 兜底
     INSTALL_VOL_PATH=$(diskutil info "$INST_DEV" 2>/dev/null \
-      | awk '/Mount Point/ {s=""; for(i=3;i<=NF;i++) s=s(i>3?" ":"")$i; if(s!="") print s}')
+      | awk '/Mount Point/{mp=""; for(i=3;i<=NF;i++){if(i>3)mp=mp" "; mp=mp $i}; if(mp!="")print mp}')
     if [ -z "$INSTALL_VOL_PATH" ]; then
       INSTALL_VOL_PATH=$(df | grep -F "Install macOS $MACOS_DISPLAY_NAME" | awk '{print $NF}' | head -n1)
     fi
@@ -195,7 +195,7 @@ build_script:
     mv output/$MACOS_NAME.cdr output/$MACOS_NAME.iso
 
     echo "使用 7z LZMA2 压缩 ISO..."
-    7z a -t7z -m0=lzma2 -mx=9 -mmt=on -ms=on -md=256m \
+    7z a -t7z -m0=lzma2 -mx=5 -mmt=on -ms=on \
       output/$MACOS_NAME.iso.7z output/$MACOS_NAME.iso
     rm output/$MACOS_NAME.iso
     echo "压缩完成: $(ls -lh output/$MACOS_NAME.iso.7z)"
