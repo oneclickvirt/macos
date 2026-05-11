@@ -33,16 +33,13 @@ environment:
       MACOS_DISPLAY_NAME: "Sequoia"
       MACOS_VERSION_NUMBER: "15"
       CATALOG: "publicrelease"
-      IMAGE_SIZE: "17200m"
-    # macOS 26 Tahoe — 已正式发布，需将 MACOS_VERSION_CODE 更新为正式版构建号。
-    # 查找最新构建号：cd gibMacOS && python3 gibMacOS.py --catalog publicrelease --version 26
-    # 正式版构建号示例格式：26A??? / 26B??? / 26C???（不带 d 后缀）
+      IMAGE_SIZE: "22000m"
     - MACOS_VERSION_CODE: "26A379"
       MACOS_NAME: "tahoe"
       MACOS_DISPLAY_NAME: "Tahoe"
       MACOS_VERSION_NUMBER: "26"
       CATALOG: "publicrelease"
-      IMAGE_SIZE: "18500m"
+      IMAGE_SIZE: "25000m"
 
 matrix:
   # fast_finish: false 确保任意一行失败时不取消其他正在运行的矩阵行
@@ -111,16 +108,38 @@ build_script:
     INST_DEV=$(echo "$ATTACH_OUT" | grep "Install_$MACOS_NAME" | awk '{print $1}')
     echo "安装设备: $INST_DEV"
 
-    sudo "$APP/Contents/Resources/createinstallmedia" \
-      --volume "$ACTUAL_INSTALL_VOL" --nointeraction --downloadassets \
-      || sudo "$APP/Contents/Resources/createinstallmedia" \
-           --volume "$ACTUAL_INSTALL_VOL" --nointeraction
+    # 先尝试带资产下载，失败后重新定位挂载点（createinstallmedia 首次运行可能
+    # 已将卷从 Install_$MACOS_NAME 重命名为 Install macOS $MACOS_DISPLAY_NAME，
+    # 此时 $ACTUAL_INSTALL_VOL 已失效，必须通过设备节点重新查找当前挂载点）
+    if ! sudo "$APP/Contents/Resources/createinstallmedia" \
+        --volume "$ACTUAL_INSTALL_VOL" --nointeraction --downloadassets; then
+      echo "⚠ --downloadassets 失败，重新定位挂载点后不带资产重试..."
+      # 通过设备节点获取当前挂载点（解析多词路径，如 /Volumes/Install macOS Sequoia）
+      RETRY_VOL=$(diskutil info "$INST_DEV" 2>/dev/null \
+        | awk '/Mount Point/ {s=""; for(i=3;i<=NF;i++) s=s(i>3?" ":"")$i; if(s!="") print s}')
+      if [ -z "$RETRY_VOL" ]; then
+        # 卷可能被临时卸载，尝试重新挂载再查找
+        diskutil mount "$INST_DEV" || true
+        sleep 2
+        RETRY_VOL=$(diskutil info "$INST_DEV" 2>/dev/null \
+          | awk '/Mount Point/ {s=""; for(i=3;i<=NF;i++) s=s(i>3?" ":"")$i; if(s!="") print s}')
+      fi
+      if [ -z "$RETRY_VOL" ]; then
+        RETRY_VOL="$ACTUAL_INSTALL_VOL"
+        echo "警告：无法重新查找挂载点，回退使用原始路径 $ACTUAL_INSTALL_VOL"
+      else
+        echo "重新定位挂载点：$RETRY_VOL"
+      fi
+      sudo "$APP/Contents/Resources/createinstallmedia" \
+        --volume "$RETRY_VOL" --nointeraction
+    fi
 
     # ── 清理不影响离线安装的冗余缓存文件 ──
     echo "清理安装卷上的冗余缓存..."
     # createinstallmedia 会把卷名从 Install_$MACOS_NAME 重命名为 "Install macOS $MACOS_DISPLAY_NAME"
-    # 优先用设备节点查当前挂载点，找不到时再用 df，兜底用旧路径
-    INSTALL_VOL_PATH=$(mount | grep "^$INST_DEV " | awk '{print $3}')
+    # 用 diskutil info 通过设备节点查挂载点（解析含空格的多词路径），找不到时再用 df 兜底
+    INSTALL_VOL_PATH=$(diskutil info "$INST_DEV" 2>/dev/null \
+      | awk '/Mount Point/ {s=""; for(i=3;i<=NF;i++) s=s(i>3?" ":"")$i; if(s!="") print s}')
     if [ -z "$INSTALL_VOL_PATH" ]; then
       INSTALL_VOL_PATH=$(df | grep -F "Install macOS $MACOS_DISPLAY_NAME" | awk '{print $NF}' | head -n1)
     fi
