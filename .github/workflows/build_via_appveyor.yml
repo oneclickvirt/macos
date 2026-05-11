@@ -16,7 +16,7 @@ name: Trigger AppVeyor macOS Build
 #   REMOTE_PASSWORD   —  目标服务器 root 密码（destination=scp_server 时必须）
 # ─────────────────────────────────────────────────────────────
 
-on:
+'on':
   workflow_dispatch:
     inputs:
       macos_target:
@@ -87,33 +87,31 @@ jobs:
           ACCOUNT="${{ inputs.appveyor_account }}"
           SLUG="${{ inputs.appveyor_slug }}"
           DEST="${{ inputs.destination }}"
-          # 导出为环境变量，Python 子进程才能通过 os.environ 读取
-          export TARGET ACCOUNT SLUG DEST REMOTE_IP REMOTE_PASSWORD
-
-          # 用 Python 安全构造 JSON（避免密码中的特殊字符破坏 JSON 格式）
-          BODY=$(python3 - <<'PYEOF'
-import json, os
-target   = os.environ["TARGET"]
-account  = os.environ["ACCOUNT"]
-slug     = os.environ["SLUG"]
-dest     = os.environ["DEST"]
-
-env_vars = {"GHA_TARGET_VERSION": target}
-if dest == "appveyor_artifact":
-    env_vars["APPVEYOR_ARTIFACT"] = "true"
-elif dest == "scp_server":
-    env_vars["IP"]       = os.environ.get("REMOTE_IP", "")
-    env_vars["PASSWORD"] = os.environ.get("REMOTE_PASSWORD", "")
-
-body = {
-    "accountName":        account,
-    "projectSlug":        slug,
-    "branch":             "main",
-    "environmentVariables": env_vars,
-}
-print(json.dumps(body))
-PYEOF
-)
+          # 用 jq 安全构造 JSON（避免密码中的特殊字符破坏 JSON 格式）
+          if [ "$DEST" = "appveyor_artifact" ]; then
+            BODY=$(jq -n \
+              --arg account "$ACCOUNT" \
+              --arg slug    "$SLUG" \
+              --arg target  "$TARGET" \
+              '{accountName: $account, projectSlug: $slug, branch: "main",
+                environmentVariables: {GHA_TARGET_VERSION: $target, APPVEYOR_ARTIFACT: "true"}}')
+          elif [ "$DEST" = "scp_server" ]; then
+            BODY=$(jq -n \
+              --arg account "$ACCOUNT" \
+              --arg slug    "$SLUG" \
+              --arg target  "$TARGET" \
+              --arg ip      "$REMOTE_IP" \
+              --arg pwd     "$REMOTE_PASSWORD" \
+              '{accountName: $account, projectSlug: $slug, branch: "main",
+                environmentVariables: {GHA_TARGET_VERSION: $target, IP: $ip, PASSWORD: $pwd}}')
+          else
+            BODY=$(jq -n \
+              --arg account "$ACCOUNT" \
+              --arg slug    "$SLUG" \
+              --arg target  "$TARGET" \
+              '{accountName: $account, projectSlug: $slug, branch: "main",
+                environmentVariables: {GHA_TARGET_VERSION: $target}}')
+          fi
 
           echo "▶ 触发 AppVeyor 构建：$ACCOUNT/$SLUG  目标版本：$TARGET  产物方式：$DEST"
 
@@ -194,13 +192,7 @@ PYEOF
           TARGET_FILE="${AV_TARGET}.iso.7z"
 
           # 从构建结果中找到含目标 Artifact 的 Job ID
-          JOB_IDS=$(python3 -c "
-import json
-with open('/tmp/av_build.json') as f:
-    data = json.load(f)
-for job in data['build']['jobs']:
-    print(job['jobId'])
-")
+          JOB_IDS=$(jq -r '.build.jobs[].jobId' /tmp/av_build.json)
 
           FOUND_JOB_ID=""
           for JID in $JOB_IDS; do
@@ -208,15 +200,9 @@ for job in data['build']['jobs']:
               -H "Authorization: Bearer $APPVEYOR_TOKEN" \
               "https://ci.appveyor.com/api/buildjobs/$JID/artifacts" \
               2>/dev/null || echo "[]")
-            MATCH=$(echo "$ARTS" | python3 -c "
-import sys, json
-arts = json.load(sys.stdin)
-for a in arts:
-    fn = a.get('fileName','') or a.get('name','')
-    if fn == '$TARGET_FILE':
-        print('yes')
-        break
-" 2>/dev/null || echo "")
+            MATCH=$(echo "$ARTS" | jq -r --arg fn "$TARGET_FILE" \
+              '[.[] | select((.fileName // .name) == $fn)] | if length > 0 then "yes" else "" end' \
+              2>/dev/null || echo "")
             if [ "$MATCH" = "yes" ]; then
               FOUND_JOB_ID="$JID"
               break

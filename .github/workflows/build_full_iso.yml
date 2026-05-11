@@ -1,6 +1,6 @@
 name: MacOS ISO Builder For OpenCore (Below 11)
 
-on:
+'on':
   workflow_dispatch:
 
 jobs:

@@ -9,8 +9,9 @@
 #   空间充足），构建完成后自动将产物下载回 GitHub Actions Artifact。
 # ==============================================================
 
+name: macOS Artifact Builder (GitHub Actions — 已废弃)
 
-on:
+'on':
   workflow_dispatch:
     inputs:
       macos_target:
