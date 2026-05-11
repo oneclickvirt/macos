@@ -34,17 +34,19 @@ environment:
       MACOS_VERSION_NUMBER: "15"
       CATALOG: "publicrelease"
       IMAGE_SIZE: "17200m"
-    # macOS 26 Tahoe — 正式发布后请将 MACOS_VERSION_CODE 更新为实际构建号
-    # 发布前可使用 developerrelease catalog 配合 beta 构建号
-    - MACOS_VERSION_CODE: "26A5247d"
+    # macOS 26 Tahoe — 已正式发布，需将 MACOS_VERSION_CODE 更新为正式版构建号。
+    # 查找最新构建号：cd gibMacOS && python3 gibMacOS.py --catalog publicrelease --version 26
+    # 正式版构建号示例格式：26A??? / 26B??? / 26C???（不带 d 后缀）
+    - MACOS_VERSION_CODE: "26A379"
       MACOS_NAME: "tahoe"
       MACOS_DISPLAY_NAME: "Tahoe"
       MACOS_VERSION_NUMBER: "26"
-      CATALOG: "developerrelease"
+      CATALOG: "publicrelease"
       IMAGE_SIZE: "18500m"
 
 matrix:
-  fast_finish: true
+  # fast_finish: false 确保任意一行失败时不取消其他正在运行的矩阵行
+  fast_finish: false
 
 build_script:
   # 全部构建逻辑在同一个 shell 里执行，保证变量作用域和早退（exit 0）正常工作
@@ -64,13 +66,16 @@ build_script:
     chmod +x gibMacOS/gibMacOS.command
 
     cd gibMacOS
-    # -v 指定主版本号，-c 指定 catalog，-b 唯一定位构建号（三者缺一不可）
-    python3 gibMacOS.py -v "$MACOS_VERSION_NUMBER" -c "$CATALOG" -b "$MACOS_VERSION_CODE"
+    # 使用长参数形式，与 GitHub Actions yml 保持一致；-b 指定唯一构建号
+    python3 gibMacOS.py --catalog "$CATALOG" --version "$MACOS_VERSION_NUMBER" -b "$MACOS_VERSION_CODE"
     cd ..
 
     DOWNLOAD_DIR=$(find "$PWD/gibMacOS/macOS Downloads" -type d -name "*$MACOS_VERSION_CODE*" | head -n1)
     if [ -z "$DOWNLOAD_DIR" ]; then
-      echo "Error: download dir not found"; exit 1
+      echo "警告: 未找到版本 $MACOS_VERSION_CODE 的下载目录（可能构建号已过期或不在 $CATALOG catalog 中）"
+      echo "请运行: cd gibMacOS && python3 gibMacOS.py --catalog $CATALOG --version $MACOS_VERSION_NUMBER"
+      echo "并将输出的构建号填写到 appveyor.yml 的 MACOS_VERSION_CODE 字段"
+      exit 0
     fi
 
     PKG=$(find "$DOWNLOAD_DIR" -maxdepth 1 -name "InstallAssistant.pkg" | head -n1)
@@ -107,11 +112,21 @@ build_script:
     echo "安装设备: $INST_DEV"
 
     sudo "$APP/Contents/Resources/createinstallmedia" \
-      --volume "$ACTUAL_INSTALL_VOL" --nointeraction --downloadassets
+      --volume "$ACTUAL_INSTALL_VOL" --nointeraction --downloadassets \
+      || sudo "$APP/Contents/Resources/createinstallmedia" \
+           --volume "$ACTUAL_INSTALL_VOL" --nointeraction
 
     # ── 清理不影响离线安装的冗余缓存文件 ──
     echo "清理安装卷上的冗余缓存..."
-    INSTALL_VOL_PATH=$(df | grep "Install_$MACOS_NAME" | awk '{print $NF}' | head -n1)
+    # createinstallmedia 会把卷名从 Install_$MACOS_NAME 重命名为 "Install macOS $MACOS_DISPLAY_NAME"
+    # 优先用设备节点查当前挂载点，找不到时再用 df，兜底用旧路径
+    INSTALL_VOL_PATH=$(mount | grep "^$INST_DEV " | awk '{print $3}')
+    if [ -z "$INSTALL_VOL_PATH" ]; then
+      INSTALL_VOL_PATH=$(df | grep -F "Install macOS $MACOS_DISPLAY_NAME" | awk '{print $NF}' | head -n1)
+    fi
+    if [ -z "$INSTALL_VOL_PATH" ]; then
+      INSTALL_VOL_PATH=$(df | grep -F "Install_$MACOS_NAME" | awk '{print $NF}' | head -n1)
+    fi
     if [ -z "$INSTALL_VOL_PATH" ]; then
       INSTALL_VOL_PATH="$ACTUAL_INSTALL_VOL"
     fi
@@ -128,7 +143,7 @@ build_script:
     fi
     if [ -d "$ACTUAL_EFI_MNT" ]; then
       if [ -d "EFI" ]; then
-        sudo cp -R EFI/* "$ACTUAL_EFI_MNT/"
+        sudo cp -R EFI/* "$ACTUAL_EFI_MNT/" || echo "警告: EFI 注入失败（分区可能只读或权限不足），跳过"
       else
         echo "警告: EFI 目录不存在，跳过 EFI 注入"
       fi
@@ -139,12 +154,16 @@ build_script:
 
     sleep 5
     diskutil list
-    echo "尝试卸载分区..."
-    hdiutil detach "$INST_DEV" -force || true
+    echo "尝试卸载磁盘镜像..."
+    # 优先通过父磁盘（diskX）整体卸载，比单独卸载分区更可靠
+    PARENT_DISK=$(echo "$INST_DEV" | sed 's/s[0-9]*$//')
+    hdiutil detach "$PARENT_DISK" -force 2>/dev/null \
+      || hdiutil detach "$INST_DEV" -force 2>/dev/null \
+      || true
     if [ -n "$EFI_DEV" ]; then
-      hdiutil detach "$EFI_DEV" -force || true
+      hdiutil detach "$EFI_DEV" -force 2>/dev/null || true
     fi
-    sleep 2
+    sleep 3
 
     echo "压缩稀疏镜像以回收空闲空间..."
     hdiutil compact temp_install.sparseimage -batteryallowed || true
@@ -152,7 +171,8 @@ build_script:
 
     mkdir -p output
     hdiutil convert temp_install.sparseimage \
-      -format UDTO -o output/$MACOS_NAME.cdr
+      -format UDTO -o output/$MACOS_NAME.cdr \
+      || { echo "Error: hdiutil convert 失败，镜像可能仍有分区已挂载"; diskutil list; exit 1; }
     mv output/$MACOS_NAME.cdr output/$MACOS_NAME.iso
 
     echo "使用 7z LZMA2 压缩 ISO..."

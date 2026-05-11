@@ -80,11 +80,13 @@ jobs:
               IMAGE_SIZE="17200m"
               ;;
             tahoe)
-              # 正式发布后请将 VERSION_CODE 更新为实际构建号
-              VERSION_CODE="26A5247d"
+              # macOS 26 Tahoe 已正式发布，请将 VERSION_CODE 更新为最新正式版构建号。
+              # 查找最新构建号：cd gibMacOS && python3 gibMacOS.py --catalog publicrelease --version 26
+              # 正式版构建号示例格式：26A??? / 26B??? / 26C???（不带 d 后缀）
+              VERSION_CODE="26A379"
               DISPLAY_NAME="Tahoe"
               VERSION_NUMBER="26"
-              CATALOG="developerrelease"
+              CATALOG="publicrelease"
               IMAGE_SIZE="18500m"
               ;;
             *)
@@ -170,14 +172,21 @@ jobs:
 
       - name: 执行 createinstallmedia
         run: |
+          # 先尝试带 --downloadassets（离线完整安装所需），若因网络失败则不带该选项重试
           sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
-            --volume "$INST_MNT" --nointeraction --downloadassets
+            --volume "$INST_MNT" --nointeraction --downloadassets \
+            || sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" \
+                 --volume "$INST_MNT" --nointeraction
 
       # ── 清理不影响离线安装的冗余缓存 ──────────────────────────
       - name: 清理安装卷冗余缓存
         run: |
-          # 重新获取当前挂载点（createinstallmedia 会重命名卷）
-          CURRENT_MNT=$(df | grep "Install " | awk '{print $NF}' | head -n1)
+          # createinstallmedia 会把卷名从 Install_$MACOS_NAME 重命名为 Install macOS $MACOS_DISPLAY_NAME
+          # 优先用设备节点查当前挂载点，再用 df，兜底用旧路径
+          CURRENT_MNT=$(mount | grep "^$INST_DEV " | awk '{print $3}')
+          if [ -z "$CURRENT_MNT" ]; then
+            CURRENT_MNT=$(df | grep -F "Install macOS $MACOS_DISPLAY_NAME" | awk '{print $NF}' | head -n1)
+          fi
           if [ -z "$CURRENT_MNT" ]; then
             CURRENT_MNT="$INST_MNT"
           fi
@@ -197,7 +206,7 @@ jobs:
             ACTUAL_EFI_MNT="$EFI_MNT"
           fi
           if [ -d "$ACTUAL_EFI_MNT" ] && [ -d "EFI" ]; then
-            sudo cp -R EFI/* "$ACTUAL_EFI_MNT/"
+            sudo cp -R EFI/* "$ACTUAL_EFI_MNT/" || echo "警告: EFI 注入失败（分区可能只读或权限不足），跳过"
             diskutil unmount "$ACTUAL_EFI_MNT" || true
           else
             echo "警告: EFI 分区挂载点未找到或 EFI 目录不存在，跳过 EFI 注入"
@@ -207,11 +216,15 @@ jobs:
         run: |
           sleep 5
           diskutil list
-          hdiutil detach "$INST_DEV" -force || true
+          # 优先通过父磁盘（diskX）整体卸载，比单独卸载分区更可靠
+          PARENT_DISK=$(echo "$INST_DEV" | sed 's/s[0-9]*$//')
+          hdiutil detach "$PARENT_DISK" -force 2>/dev/null \
+            || hdiutil detach "$INST_DEV" -force 2>/dev/null \
+            || true
           if [ -n "$EFI_DEV" ]; then
-            hdiutil detach "$EFI_DEV" -force || true
+            hdiutil detach "$EFI_DEV" -force 2>/dev/null || true
           fi
-          sleep 2
+          sleep 3
 
       # ── 压缩稀疏镜像以回收空闲空间 ────────────────────────────
       - name: 压缩稀疏镜像（回收空闲空间）
@@ -224,7 +237,8 @@ jobs:
         run: |
           mkdir -p output
           hdiutil convert temp_install.sparseimage \
-            -format UDTO -o output/${MACOS_NAME}.cdr
+            -format UDTO -o output/${MACOS_NAME}.cdr \
+            || { echo "Error: hdiutil convert 失败，镜像可能仍有分区已挂载"; diskutil list; exit 1; }
           mv output/${MACOS_NAME}.cdr output/${MACOS_NAME}.iso
           echo "ISO 大小: $(ls -lh output/${MACOS_NAME}.iso | awk '{print $5}')"
 
