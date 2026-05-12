@@ -54,10 +54,45 @@ build_script:
       exit 0
     fi
 
+    # ── Runner 环境信息 ───────────────────────────────────────────────────
+    echo "━━━━━━━━━━━━━━━━━━━━━━━ Runner 环境 ━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "CPU 逻辑核心 : $(sysctl -n hw.logicalcpu)"
+    echo "CPU 物理核心 : $(sysctl -n hw.physicalcpu)"
+    echo "物理内存     : $(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 )) GB"
+    echo "macOS 版本   : $(sw_vers -productVersion) build $(sw_vers -buildVersion)"
+    echo "━━━ 初始磁盘使用 ━━━"
+    df -h /
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    # ── 清理 Runner 上不必要的大型组件，释放磁盘空间 ─────────────────────────
+    echo "开始清理不必要的大型组件..."
+    # Xcode.app：本构建所需命令（hdiutil/diskutil/installer/createinstallmedia）
+    # 均为 macOS 系统内置或 .app bundle 内部命令，不依赖 Xcode IDE
+    if [ -d "/Applications/Xcode.app" ]; then
+      echo "  删除 Xcode.app ($(du -sh /Applications/Xcode.app 2>/dev/null | awk '{print $1}'))..."
+      sudo rm -rf /Applications/Xcode.app
+    fi
+    # iOS / watchOS / tvOS 模拟器运行时（每个数 GB）
+    if [ -d "/Library/Developer/CoreSimulator/Profiles/Runtimes" ]; then
+      echo "  删除 Simulator Runtimes ($(du -sh /Library/Developer/CoreSimulator/Profiles/Runtimes 2>/dev/null | awk '{print $1}'))..."
+      sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes
+    fi
+    sudo rm -rf /Library/Developer/CoreSimulator/Caches      2>/dev/null || true
+    rm -rf ~/Library/Developer/Xcode/DerivedData             2>/dev/null || true
+    rm -rf ~/Library/Caches/com.apple.dt.Xcode               2>/dev/null || true
+    rm -rf ~/.gradle/caches                                  2>/dev/null || true
+    rm -rf ~/.npm/_npx                                       2>/dev/null || true
+    rm -rf ~/.cargo/registry/cache                           2>/dev/null || true
+    echo "组件清理完成，当前磁盘剩余: $(df -h / | awk 'NR==2{print $4}')"
+
     brew update || true
     # p7zip 在 AppVeyor Sonoma 镜像中已预装，brew install 有时因迁移/升级返回非零退出码
     # AppVeyor macOS shell 隐式使用 -e，必须加 || true 防止脚本被中断
     HOMEBREW_NO_INSTALL_CLEANUP=1 brew install sshpass p7zip || true
+    # brew 安装后立即清理下载缓存，避免占用额外磁盘空间
+    brew cleanup --prune=all 2>/dev/null || true
+    rm -rf "$(brew --cache)" 2>/dev/null || true
+    echo "brew 缓存清理后磁盘剩余: $(df -h / | awk 'NR==2{print $4}')"
 
     git clone https://github.com/corpnewt/gibMacOS.git gibMacOS
     chmod +x gibMacOS/gibMacOS.command
@@ -83,6 +118,22 @@ build_script:
     APP="/Applications/Install macOS $MACOS_DISPLAY_NAME.app"
     if [ ! -d "$APP" ]; then
       echo "Error: $APP not found"; exit 1
+    fi
+    # pkg 已安装到 /Applications，gibMacOS 仓库（含 InstallAssistant.pkg，可达 12-14 GB）
+    # 不再需要，立即删除以释放空间
+    echo "删除 gibMacOS 仓库和下载缓存..."
+    rm -rf "$PWD/gibMacOS" 2>/dev/null || true
+    echo "gibMacOS 删除完成，当前磁盘剩余: $(df -h / | awk 'NR==2{print $4}')"
+
+    # ── 创建稀疏镜像前核查可用磁盘空间 ──────────────────────────────────────
+    AVAIL_KB=$(df / | awk 'NR==2{print $4}')
+    IMAGE_MB=$(echo "$IMAGE_SIZE" | tr -d 'mMgG')
+    # 需要：稀疏镜像（IMAGE_SIZE）+ ISO（IMAGE_SIZE）+ 7z 输出（约 IMAGE_SIZE * 0.95）+ 5 GB 余量
+    NEEDED_KB=$(( IMAGE_MB * 1024 * 3 + 5 * 1024 * 1024 ))
+    echo "磁盘检查：可用 $(( AVAIL_KB / 1024 / 1024 )) GB，预估需要约 $(( NEEDED_KB / 1024 / 1024 )) GB"
+    if [ "$AVAIL_KB" -lt "$NEEDED_KB" ]; then
+      echo "⚠ 警告：磁盘空间可能不足（可用 $(( AVAIL_KB/1024/1024 )) GB < 预估 $(( NEEDED_KB/1024/1024 )) GB），当前详情:"
+      df -h
     fi
 
     echo "Creating sparse image of size $IMAGE_SIZE …"
@@ -193,12 +244,22 @@ build_script:
       -format UDTO -o output/$MACOS_NAME.cdr \
       || { echo "Error: hdiutil convert 失败，镜像可能仍有分区已挂载"; diskutil list; exit 1; }
     mv output/$MACOS_NAME.cdr output/$MACOS_NAME.iso
+    # ISO 转换完成，稀疏镜像不再需要，立即删除以释放空间
+    # （避免 sparseimage + ISO + 7z 输出三者同时占用磁盘）
+    rm -f temp_install.sparseimage
+    echo "稀疏镜像已删除，7z 压缩前磁盘剩余: $(df -h / | awk 'NR==2{print $4}')"
 
     echo "使用 7z LZMA2 压缩 ISO..."
-    7z a -t7z -m0=lzma2 -mx=5 -mmt=on -ms=on \
+    # -mx=9: ultra 压缩级别（最高）
+    # -mfb=273: LZMA2 最大 fast-bytes（默认 64，273 是上限，对大块重复内容有效）
+    # -md=256m: 256 MB 字典（AppVeyor 机器约 8 GB RAM，256m 压缩约用 3 GB，安全）
+    # -ms=on: 固实压缩（单文件无影响，保留以备将来多文件一起压缩时生效）
+    # -mmt=on: 多线程（充分利用 CPU）
+    7z a -t7z -m0=lzma2 -mx=9 -mfb=273 -md=256m -mmt=on -ms=on \
       output/$MACOS_NAME.iso.7z output/$MACOS_NAME.iso
     rm output/$MACOS_NAME.iso
     echo "压缩完成: $(ls -lh output/$MACOS_NAME.iso.7z)"
+    echo "7z 压缩后磁盘剩余: $(df -h / | awk 'NR==2{print $4}')"
 
     # ── 产物存储方式一：AppVeyor Artifact（APPVEYOR_ARTIFACT=true 时执行）──
     if [ "$APPVEYOR_ARTIFACT" = "true" ]; then
@@ -208,8 +269,26 @@ build_script:
 
     # ── 产物存储方式二：SCP 上传到服务器（IP 已配置时执行）──
     if [ -n "$IP" ]; then
+      # 统一 SSH 选项：禁用主机密钥检查、不写 known_hosts、启用保活（每 60 s 一次，
+      # 最多 10 次无响应后断开）、连接超时 30 s——防止大文件传输时连接静默挂起
+      SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o ServerAliveInterval=60 -o ServerAliveCountMax=10 -o ConnectTimeout=30"
       ssh-keygen -R "$IP"
-      sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@"$IP" "mkdir -p /root/macos && exit"
-      sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "output/$MACOS_NAME.iso.7z" root@"$IP":/root/macos/
-      sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@"$IP" "ls -lah /root/macos/"
+      sshpass -p "$PASSWORD" ssh $SSH_OPTS root@"$IP" "mkdir -p /root/macos && exit"
+
+      LOCAL_FILE="output/$MACOS_NAME.iso.7z"
+      REMOTE_FILE="/root/macos/$MACOS_NAME.iso.7z"
+      LOCAL_SIZE=$(stat -f%z "$LOCAL_FILE")
+      # 查询远端文件大小（不存在时返回 0），若与本地一致则跳过上传（去重）
+      REMOTE_SIZE=$(sshpass -p "$PASSWORD" ssh $SSH_OPTS root@"$IP" \
+        "stat -c%s \"$REMOTE_FILE\" 2>/dev/null || echo 0")
+      if [ "$REMOTE_SIZE" = "$LOCAL_SIZE" ]; then
+        echo "跳过上传：$MACOS_NAME.iso.7z 已存在于远程服务器且大小一致（${LOCAL_SIZE} bytes），无需重复上传"
+      else
+        echo "开始上传 $MACOS_NAME.iso.7z（本地: ${LOCAL_SIZE} B，远程已有: ${REMOTE_SIZE} B）..."
+        sshpass -p "$PASSWORD" scp $SSH_OPTS "$LOCAL_FILE" root@"$IP":"$REMOTE_FILE"
+        echo "上传完成"
+      fi
+
+      sshpass -p "$PASSWORD" ssh $SSH_OPTS root@"$IP" "ls -lah /root/macos/"
     fi
