@@ -30,6 +30,10 @@ name: Trigger AppVeyor macOS Build
         description: AppVeyor 项目 Slug
         required: false
         default: macos
+      validate_only:
+        description: Only validate AppVeyor project access; do not start an image build
+        type: boolean
+        default: false
 jobs:
   trigger-and-monitor:
     runs-on: ubuntu-latest
@@ -38,8 +42,8 @@ jobs:
     - name: 检查必要 Secret
       env:
         HAS_TOKEN: ${{ secrets.APPVEYOR_TOKEN != '' && 'yes' || 'no' }}
-        HAS_IP: ${{ secrets.REMOTE_IP != '' && 'yes' || 'no' }}
-        HAS_PWD: ${{ secrets.REMOTE_PASSWORD != '' && 'yes' || 'no' }}
+        HAS_IP: ${{ (secrets.REMOTE_IP != '' || secrets.IP != '') && 'yes' || 'no' }}
+        HAS_PWD: ${{ (secrets.REMOTE_PASSWORD != '' || secrets.PASSWORD != '') && 'yes' || 'no' }}
       run: |
         if [ "$HAS_TOKEN" != "yes" ]; then
           echo "::error::缺少必要 Secret：APPVEYOR_TOKEN"
@@ -54,12 +58,35 @@ jobs:
           fi
         fi
         echo "✅ Secret 检查通过（destination: ${{ inputs.destination }}）"
+    - name: Validate AppVeyor project access
+      if: ${{ inputs.validate_only }}
+      env:
+        APPVEYOR_TOKEN: ${{ secrets.APPVEYOR_TOKEN }}
+        APPVEYOR_ACCOUNT: ${{ inputs.appveyor_account }}
+        APPVEYOR_SLUG: ${{ inputs.appveyor_slug }}
+      run: |
+        set -euo pipefail
+        curl -fsS --retry 3 --connect-timeout 10 --max-time 60 \
+          -H "Authorization: Bearer $APPVEYOR_TOKEN" \
+          "https://ci.appveyor.com/api/projects/$APPVEYOR_ACCOUNT/$APPVEYOR_SLUG" > "$RUNNER_TEMP/appveyor-project.json"
+        python3 - <<'PY'
+        import json, os
+        from pathlib import Path
+        path = Path(os.environ['RUNNER_TEMP']) / 'appveyor-project.json'
+        try:
+            value = json.loads(path.read_text())
+            if not value.get('project', {}).get('projectId'):
+                raise SystemExit('AppVeyor project not accessible')
+        finally:
+            path.unlink(missing_ok=True)
+        print('AppVeyor project access verified.')
+        PY
     - name: 触发 AppVeyor 构建
       id: trigger
       env:
         APPVEYOR_TOKEN: ${{ secrets.APPVEYOR_TOKEN }}
-        REMOTE_IP: ${{ secrets.REMOTE_IP }}
-        REMOTE_PASSWORD: ${{ secrets.REMOTE_PASSWORD }}
+        REMOTE_IP: ${{ secrets.REMOTE_IP || secrets.IP }}
+        REMOTE_PASSWORD: ${{ secrets.REMOTE_PASSWORD || secrets.PASSWORD }}
       run: |
         TARGET="${{ inputs.macos_target }}"
         ACCOUNT="${{ inputs.appveyor_account }}"
@@ -93,7 +120,7 @@ jobs:
 
         echo "▶ 触发 AppVeyor 构建：$ACCOUNT/$SLUG  目标版本：$TARGET  产物方式：$DEST"
 
-        RESP=$(curl -sf -X POST \
+        RESP=$(curl -fsS --retry 3 --connect-timeout 10 --max-time 60 -X POST \
           -H "Authorization: Bearer $APPVEYOR_TOKEN" \
           -H "Content-Type: application/json" \
           "https://ci.appveyor.com/api/builds" \
@@ -108,7 +135,7 @@ jobs:
           "import sys, json; print(json.load(sys.stdin)['version'])" 2>/dev/null)
 
         if [ -z "$BUILD_VER" ]; then
-          echo "::error::AppVeyor 响应异常：$RESP"
+          echo "::error::AppVeyor response has no build version; private response body withheld"
           exit 1
         fi
 
@@ -120,6 +147,7 @@ jobs:
         echo ""
         echo "✅ 构建已触发，版本号：$BUILD_VER"
         echo "   AppVeyor 构建页面：https://ci.appveyor.com/project/$ACCOUNT/$SLUG/build/$BUILD_VER"
+      if: ${{ !inputs.validate_only }}
     - name: 等待 AppVeyor 构建完成
       env:
         APPVEYOR_TOKEN: ${{ secrets.APPVEYOR_TOKEN }}
@@ -128,7 +156,7 @@ jobs:
         for i in $(seq 1 $MAX); do
           sleep 120
 
-          RESP=$(curl -sf \
+          RESP=$(curl -fsS --retry 3 --connect-timeout 10 --max-time 60 \
             -H "Authorization: Bearer $APPVEYOR_TOKEN" \
             "https://ci.appveyor.com/api/projects/$AV_ACCOUNT/$AV_SLUG/build/$BUILD_VERSION" \
             2>/dev/null || echo '{"build":{"status":"unknown"}}')
@@ -158,8 +186,9 @@ jobs:
             exit 1
           fi
         done
+      if: ${{ !inputs.validate_only }}
     - name: 打印 AppVeyor Artifact 下载 URL
-      if: env.AV_DEST == 'appveyor_artifact'
+      if: ${{ !inputs.validate_only && (env.AV_DEST == 'appveyor_artifact') }}
       env:
         APPVEYOR_TOKEN: ${{ secrets.APPVEYOR_TOKEN }}
       run: |
@@ -170,7 +199,7 @@ jobs:
 
         FOUND_JOB_ID=""
         for JID in $JOB_IDS; do
-          ARTS=$(curl -sf \
+          ARTS=$(curl -fsS --retry 3 --connect-timeout 10 --max-time 60 \
             -H "Authorization: Bearer $APPVEYOR_TOKEN" \
             "https://ci.appveyor.com/api/buildjobs/$JID/artifacts" \
             2>/dev/null || echo "[]")
@@ -200,7 +229,7 @@ jobs:
         fi
         echo "════════════════════════════════════════════════════"
     - name: 确认 SCP 上传完成
-      if: env.AV_DEST == 'scp_server'
+      if: ${{ !inputs.validate_only && (env.AV_DEST == 'scp_server') }}
       run: |
         echo ""
         echo "════════════════════════════════════════════════════"
