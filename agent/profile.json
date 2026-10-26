@@ -1,0 +1,19 @@
+{
+  "repository": "oneclickvirt/macos",
+  "branch": "main",
+  "skill_name": "oneclickvirt-macos",
+  "purpose": "Create the offline macOS ISO artifacts maintained by this repository.",
+  "notes": [
+    "Read the current image-production scripts and platform requirements. Verify the exact macOS version and output checksums; ISO creation is not proof that the guest boots on every host."
+  ],
+  "guide": "https://www.spiritlhl.net/guide/agent_integrations.html",
+  "releases": false,
+  "mcp": false,
+  "source_files": [
+    "back/compress_and_cleanup.sh"
+  ],
+  "purpose_zh": "按当前脚本制作离线 macOS ISO 并核对版本及校验值。",
+  "notes_zh": [
+    "核对当前制作脚本、平台要求、macOS 版本及输出校验值。ISO 制作完成不等于已验证所有宿主机都可启动该系统。"
+  ]
+}

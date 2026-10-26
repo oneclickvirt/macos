@@ -1,0 +1,10 @@
+{
+  "repository": "oneclickvirt/macos",
+  "skill_name": "oneclickvirt-macos",
+  "mcp": false,
+  "files": {
+    "agent/profile.json": "8d556293a383a3114a4893e93f2dd51336294d6dbad459f26c281212537c29d9",
+    "skills/oneclickvirt-macos/SKILL.md": "d516e2dd4512c89d396f0935336b03341821dab3833e540ba606ec2b80dec7a3",
+    "skills/oneclickvirt-macos/SKILL_ZH.md": "207da964d144100045123c1d011b34b6169416c56bdd06c9c4044de6d2036e5e"
+  }
+}
